@@ -248,7 +248,7 @@ static int cpu_map_kthread_run(void *data)
 	 * kthread_stop signal until queue is empty.
 	 */
 	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
-		unsigned int xdp_pass = 0, xdp_drop = 0;
+		unsigned int xdp_pass = 0, xdp_drop = 0, xdp_redirect = 0;
 		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
 		unsigned int drops = 0, sched = 0;
 		void *xdp_frames[CPUMAP_BATCH];
@@ -279,7 +279,7 @@ static int cpu_map_kthread_run(void *data)
 		n = ptr_ring_consume_batched(rcpu->queue, xdp_frames,
 					     CPUMAP_BATCH);
 
-		rcu_read_lock();
+		rcu_read_lock_bh();
 
 		prog = READ_ONCE(rcpu->prog);
 		for (i = 0; i < n; i++) {
@@ -315,6 +315,16 @@ static int cpu_map_kthread_run(void *data)
 					xdp_pass++;
 				}
 				break;
+			case XDP_REDIRECT:
+				err = xdp_do_redirect(xdpf->dev_rx, &xdp,
+						      prog);
+				if (unlikely(err)) {
+					xdp_return_frame(xdpf);
+					drops++;
+				} else {
+					xdp_redirect++;
+				}
+				break;
 			default:
 				bpf_warn_invalid_xdp_action(act);
 				/* fallthrough */
@@ -325,7 +335,10 @@ static int cpu_map_kthread_run(void *data)
 			}
 		}
 
-		rcu_read_unlock();
+		if (xdp_redirect)
+			xdp_do_flush_map();
+
+		rcu_read_unlock_bh();
 
 		m = kmem_cache_alloc_bulk(skbuff_head_cache, gfp,
 					  nframes, skbs);
@@ -354,7 +367,7 @@ static int cpu_map_kthread_run(void *data)
 		}
 		/* Feedback loop via tracepoint */
 		trace_xdp_cpumap_kthread(rcpu->map_id, n, drops, sched,
-					 xdp_pass, xdp_drop);
+					 xdp_pass, xdp_drop, xdp_redirect);
 
 		local_bh_enable(); /* resched point, may call do_softirq() */
 	}
