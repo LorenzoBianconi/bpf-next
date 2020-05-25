@@ -77,12 +77,15 @@ struct bpf_cpu_map_entry {
 
 	struct bpf_cpumap_val value;
 	struct bpf_prog *prog;
+	struct xdp_rxq_info rq_info;
 };
 
 struct bpf_cpu_map {
 	struct bpf_map map;
 	/* Below members specific for map type */
 	struct bpf_cpu_map_entry **cpu_map;
+	/* net_device used for XDP */
+	struct net_device cpumap_dev;
 };
 
 static DEFINE_PER_CPU(struct list_head, cpu_map_flush_list);
@@ -135,6 +138,8 @@ static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
 					   cmap->map.numa_node);
 	if (!cmap->cpu_map)
 		goto free_charge;
+
+	init_dummy_netdev(&cmap->cpumap_dev);
 
 	return &cmap->map;
 free_charge:
@@ -248,7 +253,7 @@ static int cpu_map_kthread_run(void *data)
 	 * kthread_stop signal until queue is empty.
 	 */
 	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
-		unsigned int xdp_pass = 0, xdp_drop = 0;
+		unsigned int xdp_pass = 0, xdp_drop = 0, xdp_redirect = 0;
 		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
 		unsigned int drops = 0, sched = 0;
 		void *xdp_frames[CPUMAP_BATCH];
@@ -280,7 +285,7 @@ static int cpu_map_kthread_run(void *data)
 					     CPUMAP_BATCH);
 
 		xdp_set_return_frame_no_direct();
-		rcu_read_lock();
+		rcu_read_lock_bh();
 
 		prog = READ_ONCE(rcpu->prog);
 		for (i = 0; i < n; i++) {
@@ -316,6 +321,19 @@ static int cpu_map_kthread_run(void *data)
 					xdp_pass++;
 				}
 				break;
+			case XDP_REDIRECT:
+				xdp_release_frame(xdpf);
+				xdp.rxq = &rcpu->rq_info;
+
+				err = xdp_do_redirect(xdpf->dev_rx, &xdp,
+						      prog);
+				if (unlikely(err)) {
+					xdp_return_frame(xdpf);
+					drops++;
+				} else {
+					xdp_redirect++;
+				}
+				break;
 			default:
 				bpf_warn_invalid_xdp_action(act);
 				/* fallthrough */
@@ -326,7 +344,10 @@ static int cpu_map_kthread_run(void *data)
 			}
 		}
 
-		rcu_read_unlock();
+		if (xdp_redirect)
+			xdp_do_flush_map();
+
+		rcu_read_unlock_bh();
 		xdp_clear_return_frame_no_direct();
 
 		m = kmem_cache_alloc_bulk(skbuff_head_cache, gfp,
@@ -356,7 +377,7 @@ static int cpu_map_kthread_run(void *data)
 		}
 		/* Feedback loop via tracepoint */
 		trace_xdp_cpumap_kthread(rcpu->map_id, n, drops, sched,
-					 xdp_pass, xdp_drop);
+					 xdp_pass, xdp_drop, xdp_redirect);
 
 		local_bh_enable(); /* resched point, may call do_softirq() */
 	}
@@ -375,20 +396,36 @@ bool cpu_map_prog_allowed(struct bpf_map *map)
 static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu, int fd)
 {
 	struct bpf_prog *prog;
+	int err = -EINVAL;
 
 	prog = bpf_prog_get_type_dev(fd, BPF_PROG_TYPE_XDP, false);
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
 
-	if (prog->expected_attach_type != BPF_XDP_CPUMAP) {
-		bpf_prog_put(prog);
-		return -EINVAL;
-	}
+	if (prog->expected_attach_type != BPF_XDP_CPUMAP)
+		goto err_prog_put;
 
 	rcpu->value.bpf_prog.id = prog->aux->id;
 	rcpu->prog = prog;
 
+	err = xdp_rxq_info_reg(&rcpu->rq_info, &rcpu->cmap->cpumap_dev,
+			       rcpu->cpu);
+	if (err < 0)
+		goto err_prog_put;
+
+	err = xdp_rxq_info_reg_mem_model(&rcpu->rq_info,
+					 MEM_TYPE_PAGE_SHARED, NULL);
+	if (err < 0)
+		goto err_reg_mem;
+
 	return 0;
+
+err_reg_mem:
+	xdp_rxq_info_unreg(&rcpu->rq_info);
+err_prog_put:
+	bpf_prog_put(prog);
+
+	return err;
 }
 
 static struct bpf_cpu_map_entry *
@@ -474,6 +511,9 @@ static void __cpu_map_entry_free(struct rcu_head *rcu)
 	free_percpu(rcpu->bulkq);
 	/* Cannot kthread_stop() here, last put free rcpu resources */
 	put_cpu_map_entry(rcpu);
+
+	if (xdp_rxq_info_is_reg(&rcpu->rq_info))
+		xdp_rxq_info_unreg(&rcpu->rq_info);
 }
 
 /* After xchg pointer to bpf_cpu_map_entry, use the call_rcu() to
