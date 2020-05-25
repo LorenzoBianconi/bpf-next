@@ -240,7 +240,7 @@ static int cpu_map_bpf_prog_run_xdp(struct bpf_cpu_map_entry *rcpu,
 	xdp_set_return_frame_no_direct();
 	xdp.rxq = &rxq;
 
-	rcu_read_lock();
+	rcu_read_lock_bh();
 
 	prog = READ_ONCE(rcpu->prog);
 	for (i = 0; i < n; i++) {
@@ -266,6 +266,16 @@ static int cpu_map_bpf_prog_run_xdp(struct bpf_cpu_map_entry *rcpu,
 				stats->pass++;
 			}
 			break;
+		case XDP_REDIRECT:
+			err = xdp_do_redirect(xdpf->dev_rx, &xdp,
+					      prog);
+			if (unlikely(err)) {
+				xdp_return_frame(xdpf);
+				stats->drop++;
+			} else {
+				stats->redirect++;
+			}
+			break;
 		default:
 			bpf_warn_invalid_xdp_action(act);
 			/* fallthrough */
@@ -276,7 +286,10 @@ static int cpu_map_bpf_prog_run_xdp(struct bpf_cpu_map_entry *rcpu,
 		}
 	}
 
-	rcu_read_unlock();
+	if (stats->redirect)
+		xdp_do_flush_map();
+
+	rcu_read_unlock_bh(); /* resched point, may call do_softirq() */
 	xdp_clear_return_frame_no_direct();
 
 	return nframes;
