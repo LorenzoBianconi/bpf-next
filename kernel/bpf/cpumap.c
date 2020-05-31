@@ -51,6 +51,10 @@ struct xdp_bulk_queue {
 /* CPUMAP value */
 struct bpf_cpumap_val {
 	u32 qsize;	/* queue size */
+	union {
+		int fd;	/* prog fd on map write */
+		u32 id;	/* prog id on map read */
+	} bpf_prog;
 };
 
 /* Struct for every remote "destination" CPU in map */
@@ -72,6 +76,7 @@ struct bpf_cpu_map_entry {
 	struct rcu_head rcu;
 
 	struct bpf_cpumap_val value;
+	struct bpf_prog *prog;
 };
 
 struct bpf_cpu_map {
@@ -86,6 +91,7 @@ static int bq_flush_to_queue(struct xdp_bulk_queue *bq);
 
 static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
 {
+	u32 value_size = attr->value_size;
 	struct bpf_cpu_map *cmap;
 	int err = -ENOMEM;
 	u64 cost;
@@ -96,7 +102,9 @@ static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
 
 	/* check sanity of attributes */
 	if (attr->max_entries == 0 || attr->key_size != 4 ||
-	    attr->value_size != 4 || attr->map_flags & ~BPF_F_NUMA_NODE)
+	    (value_size != offsetofend(struct bpf_cpumap_val, qsize) &&
+	     value_size != offsetofend(struct bpf_cpumap_val, bpf_prog.fd)) ||
+	    attr->map_flags & ~BPF_F_NUMA_NODE)
 		return ERR_PTR(-EINVAL);
 
 	cmap = kzalloc(sizeof(*cmap), GFP_USER);
@@ -240,11 +248,14 @@ static int cpu_map_kthread_run(void *data)
 	 * kthread_stop signal until queue is empty.
 	 */
 	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
+		unsigned int xdp_pass = 0, xdp_drop = 0;
+		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
 		unsigned int drops = 0, sched = 0;
+		void *xdp_frames[CPUMAP_BATCH];
 		void *frames[CPUMAP_BATCH];
 		void *skbs[CPUMAP_BATCH];
-		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
-		int i, n, m;
+		int i, n, m, nframes = 0;
+		struct bpf_prog *prog;
 
 		/* Release CPU reschedule checks */
 		if (__ptr_ring_empty(rcpu->queue)) {
@@ -265,28 +276,67 @@ static int cpu_map_kthread_run(void *data)
 		 * kthread CPU pinned. Lockless access to ptr_ring
 		 * consume side valid as no-resize allowed of queue.
 		 */
-		n = ptr_ring_consume_batched(rcpu->queue, frames, CPUMAP_BATCH);
+		n = ptr_ring_consume_batched(rcpu->queue, xdp_frames,
+					     CPUMAP_BATCH);
 
+		rcu_read_lock();
+
+		prog = READ_ONCE(rcpu->prog);
 		for (i = 0; i < n; i++) {
-			void *f = frames[i];
+			void *f = xdp_frames[i];
 			struct page *page = virt_to_page(f);
+			struct xdp_frame *xdpf;
+			struct xdp_buff xdp;
+			u32 act;
+			int err;
 
 			/* Bring struct page memory area to curr CPU. Read by
 			 * build_skb_around via page_is_pfmemalloc(), and when
 			 * freed written by page_frag_free call.
 			 */
 			prefetchw(page);
+			if (!prog) {
+				frames[nframes++] = xdp_frames[i];
+				continue;
+			}
+
+			xdpf = f;
+			xdp_convert_frame_to_buff(xdpf, &xdp);
+
+			act = bpf_prog_run_xdp(prog, &xdp);
+			switch (act) {
+			case XDP_PASS:
+				err = xdp_update_frame_from_buff(&xdp, xdpf);
+				if (err < 0) {
+					xdp_return_frame(xdpf);
+					drops++;
+				} else {
+					frames[nframes++] = xdpf;
+					xdp_pass++;
+				}
+				break;
+			default:
+				bpf_warn_invalid_xdp_action(act);
+				/* fallthrough */
+			case XDP_DROP:
+				xdp_return_frame(xdpf);
+				xdp_drop++;
+				break;
+			}
 		}
 
-		m = kmem_cache_alloc_bulk(skbuff_head_cache, gfp, n, skbs);
+		rcu_read_unlock();
+
+		m = kmem_cache_alloc_bulk(skbuff_head_cache, gfp,
+					  nframes, skbs);
 		if (unlikely(m == 0)) {
-			for (i = 0; i < n; i++)
+			for (i = 0; i < nframes; i++)
 				skbs[i] = NULL; /* effect: xdp_return_frame */
-			drops = n;
+			drops += nframes;
 		}
 
 		local_bh_disable();
-		for (i = 0; i < n; i++) {
+		for (i = 0; i < nframes; i++) {
 			struct xdp_frame *xdpf = frames[i];
 			struct sk_buff *skb = skbs[i];
 			int ret;
@@ -303,13 +353,39 @@ static int cpu_map_kthread_run(void *data)
 				drops++;
 		}
 		/* Feedback loop via tracepoint */
-		trace_xdp_cpumap_kthread(rcpu->map_id, n, drops, sched);
+		trace_xdp_cpumap_kthread(rcpu->map_id, n, drops, sched,
+					 xdp_pass, xdp_drop);
 
 		local_bh_enable(); /* resched point, may call do_softirq() */
 	}
 	__set_current_state(TASK_RUNNING);
 
 	put_cpu_map_entry(rcpu);
+	return 0;
+}
+
+bool cpu_map_prog_allowed(struct bpf_map *map)
+{
+	return map->map_type == BPF_MAP_TYPE_CPUMAP &&
+	       map->value_size != offsetofend(struct bpf_cpumap_val, qsize);
+}
+
+static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu, int fd)
+{
+	struct bpf_prog *prog;
+
+	prog = bpf_prog_get_type_dev(fd, BPF_PROG_TYPE_XDP, false);
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+
+	if (prog->expected_attach_type != BPF_XDP_CPUMAP) {
+		bpf_prog_put(prog);
+		return -EINVAL;
+	}
+
+	rcpu->value.bpf_prog.id = prog->aux->id;
+	rcpu->prog = prog;
+
 	return 0;
 }
 
@@ -360,6 +436,10 @@ __cpu_map_entry_alloc(struct bpf_cpumap_val *value, u32 cpu, int map_id)
 
 	get_cpu_map_entry(rcpu); /* 1-refcnt for being in cmap->cpu_map[] */
 	get_cpu_map_entry(rcpu); /* 1-refcnt for kthread */
+
+	if (value->bpf_prog.fd >= 0 &&
+	    __cpu_map_load_bpf_program(rcpu, value->bpf_prog.fd))
+		goto free_ptr_ring;
 
 	/* Make sure kthread runs on a single CPU */
 	kthread_bind(rcpu->kthread, cpu);
@@ -420,6 +500,8 @@ static void __cpu_map_entry_replace(struct bpf_cpu_map *cmap,
 
 	old_rcpu = xchg(&cmap->cpu_map[key_cpu], rcpu);
 	if (old_rcpu) {
+		if (old_rcpu->prog)
+			bpf_prog_put(old_rcpu->prog);
 		call_rcu(&old_rcpu->rcu, __cpu_map_entry_free);
 		INIT_WORK(&old_rcpu->kthread_stop_wq, cpu_map_kthread_stop);
 		schedule_work(&old_rcpu->kthread_stop_wq);
@@ -443,7 +525,9 @@ static int cpu_map_update_elem(struct bpf_map *map, void *key, void *value,
 			       u64 map_flags)
 {
 	struct bpf_cpu_map *cmap = container_of(map, struct bpf_cpu_map, map);
-	struct bpf_cpumap_val cpumap_value = {};
+	struct bpf_cpumap_val cpumap_value = {
+		.bpf_prog.fd = -1,
+	};
 	struct bpf_cpu_map_entry *rcpu;
 	/* Array index key correspond to CPU number */
 	u32 key_cpu = *(u32 *)key;
