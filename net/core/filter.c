@@ -7090,6 +7090,13 @@ static bool xdp_is_valid_access(int off, int size,
 		}
 	}
 
+	if (prog->expected_attach_type == BPF_XDP_CPUMAP) {
+		switch (off) {
+		case offsetof(struct xdp_md, ingress_ifindex):
+			return false;
+		}
+	}
+
 	if (type == BPF_WRITE) {
 		if (bpf_prog_is_dev_bound(prog->aux)) {
 			switch (off) {
