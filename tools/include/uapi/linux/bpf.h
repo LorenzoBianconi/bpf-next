@@ -3586,6 +3586,18 @@ union bpf_attr {
  * 		the data in *dst*. This is a wrapper of **copy_from_user**\ ().
  * 	Return
  * 		0 on success, or a negative error in case of failure.
+ *
+ * int bpf_xdp_get_frag_count(struct xdp_buff *xdp_md)
+ *	Description
+ *		Get the number of fragments for a given xdp multi-buffer.
+ *	Return
+ *		The number of fragments
+ *
+ * int bpf_xdp_get_frags_total_size(struct xdp_buff *xdp_md)
+ *	Description
+ *		Get the total size of fragments for a given xdp multi-buffer.
+ *	Return
+ *		The total size of fragments for a given xdp multi-buffer.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -3737,6 +3749,8 @@ union bpf_attr {
 	FN(inode_storage_delete),	\
 	FN(d_path),			\
 	FN(copy_from_user),		\
+	FN(xdp_get_frag_count),		\
+	FN(xdp_get_frags_total_size),	\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
