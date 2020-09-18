@@ -510,8 +510,13 @@ int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,
  * the end of the header data, ie. at skb->end.
  */
 struct skb_shared_info {
-	__u8		__unused;
-	__u8		meta_len;
+	union {
+		struct {
+			__u8		__unused;
+			__u8		meta_len;
+		};
+		__u16 xdp_data_len;
+	};
 	__u8		nr_frags;
 	__u8		tx_flags;
 	unsigned short	gso_size;
