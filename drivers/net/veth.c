@@ -415,6 +415,35 @@ static struct sk_buff *veth_build_skb(void *head, int headroom, int len,
 	return skb;
 }
 
+static struct sk_buff *veth_build_skb_from_frame(struct xdp_frame *frame,
+						 void *hard_start)
+{
+	struct skb_shared_info *sinfo = xdp_get_shared_info_from_frame(frame);
+	unsigned int headroom = sizeof(struct xdp_frame) + frame->headroom;
+	int i, num_frags = frame->mb ? sinfo->nr_frags : 0;
+	struct sk_buff *skb;
+
+	skb = build_skb(hard_start, frame->frame_sz);
+	if (!skb)
+		return NULL;
+
+	skb_reserve(skb, headroom);
+	skb_put(skb, frame->len);
+
+	if (likely(!frame->mb))
+		return skb;
+
+	for (i = 0; i < num_frags; i++) {
+		skb_frag_t *frag = &sinfo->frags[i];
+
+		skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
+				skb_frag_page(frag), skb_frag_off(frag),
+				skb_frag_size(frag), frame->frame_sz);
+	}
+
+	return skb;
+}
+
 static int veth_select_rxq(struct net_device *dev)
 {
 	return smp_processor_id() % dev->real_num_rx_queues;
@@ -453,6 +482,14 @@ static int veth_xdp_xmit(struct net_device *dev, int n,
 	for (i = 0; i < n; i++) {
 		struct xdp_frame *frame = frames[i];
 		void *ptr = veth_xdp_to_ptr(frame);
+		int len = frame->len;
+
+		if (unlikely(frame->mb)) {
+			struct skb_shared_info *sinfo;
+
+			sinfo = xdp_get_shared_info_from_frame(frame);
+			len += sinfo->xdp_data_len;
+		}
 
 		if (unlikely(frame->len > max_len ||
 			     __ptr_ring_produce(&rq->xdp_ring, ptr))) {
@@ -560,10 +597,8 @@ static struct sk_buff *veth_xdp_rcv_one(struct veth_rq *rq,
 					struct veth_stats *stats)
 {
 	void *hard_start = frame->data - frame->headroom;
-	int len = frame->len, delta = 0;
 	struct xdp_frame orig_frame;
 	struct bpf_prog *xdp_prog;
-	unsigned int headroom;
 	struct sk_buff *skb;
 
 	/* bpf_xdp_adjust_head() assures BPF cannot access xdp_frame area */
@@ -582,8 +617,8 @@ static struct sk_buff *veth_xdp_rcv_one(struct veth_rq *rq,
 
 		switch (act) {
 		case XDP_PASS:
-			delta = frame->data - xdp.data;
-			len = xdp.data_end - xdp.data;
+			frame->headroom -= (frame->data - xdp.data);
+			frame->len = xdp.data_end - xdp.data;
 			break;
 		case XDP_TX:
 			orig_frame = *frame;
@@ -621,8 +656,7 @@ static struct sk_buff *veth_xdp_rcv_one(struct veth_rq *rq,
 	}
 	rcu_read_unlock();
 
-	headroom = sizeof(struct xdp_frame) + frame->headroom - delta;
-	skb = veth_build_skb(hard_start, headroom, len, frame->frame_sz);
+	skb = veth_build_skb_from_frame(frame, hard_start);
 	if (!skb) {
 		xdp_return_frame(frame);
 		stats->rx_drops++;
@@ -806,6 +840,13 @@ static int veth_xdp_rcv(struct veth_rq *rq, int budget,
 			struct xdp_frame *frame = veth_ptr_to_xdp(ptr);
 
 			stats->xdp_bytes += frame->len;
+			if (unlikely(frame->mb)) {
+				struct skb_shared_info *sinfo;
+
+				sinfo = xdp_get_shared_info_from_frame(frame);
+				stats->xdp_bytes += sinfo->xdp_data_len;
+			}
+
 			skb = veth_xdp_rcv_one(rq, frame, bq, stats);
 		} else {
 			skb = ptr;
