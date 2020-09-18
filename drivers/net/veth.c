@@ -498,6 +498,14 @@ static int veth_xdp_xmit(struct net_device *dev, int n,
 	for (i = 0; i < n; i++) {
 		struct xdp_frame *frame = frames[i];
 		void *ptr = veth_xdp_to_ptr(frame);
+		int frame_len = frame->len;
+
+		if (unlikely(xdp_frame_is_mb(frame))) {
+			struct skb_shared_info *sinfo;
+
+			sinfo = xdp_get_shared_info_from_frame(frame);
+			frame_len += sinfo->xdp_frags_size;
+		}
 
 		if (unlikely(frame->len > max_len ||
 			     __ptr_ring_produce(&rq->xdp_ring, ptr)))
@@ -861,6 +869,13 @@ static int veth_xdp_rcv(struct veth_rq *rq, int budget,
 			struct xdp_frame *frame = veth_ptr_to_xdp(ptr);
 
 			stats->xdp_bytes += frame->len;
+			if (unlikely(xdp_frame_is_mb(frame))) {
+				struct skb_shared_info *sinfo;
+
+				sinfo = xdp_get_shared_info_from_frame(frame);
+				stats->xdp_bytes += sinfo->xdp_frags_size;
+			}
+
 			frame = veth_xdp_rcv_one(rq, frame, bq, stats);
 			if (frame) {
 				/* XDP_PASS */
