@@ -2193,13 +2193,12 @@ mvneta_xdp_xmit(struct net_device *dev, int num_frame,
 static int
 mvneta_run_xdp(struct mvneta_port *pp, struct mvneta_rx_queue *rxq,
 	       struct bpf_prog *prog, struct xdp_buff *xdp,
-	       u32 frame_sz, struct mvneta_stats *stats)
+	       struct mvneta_stats *stats)
 {
-	unsigned int len, data_len, sync;
+	unsigned int len, sync;
 	u32 ret, act;
 
 	len = xdp->data_end - xdp->data_hard_start - pp->rx_offset_correction;
-	data_len = xdp->data_end - xdp->data;
 	act = bpf_prog_run_xdp(prog, xdp);
 
 	/* Due xdp_adjust_tail: DMA sync for_device cover max len CPU touch */
@@ -2241,7 +2240,13 @@ mvneta_run_xdp(struct mvneta_port *pp, struct mvneta_rx_queue *rxq,
 		break;
 	}
 
-	stats->rx_bytes += frame_sz + xdp->data_end - xdp->data - data_len;
+	stats->rx_bytes += xdp->data_end - xdp->data;
+	if (unlikely(xdp->mb)) {
+		struct skb_shared_info *sinfo;
+
+		sinfo = xdp_get_shared_info_from_buff(xdp);
+		stats->rx_bytes += sinfo->xdp_data_len;
+	}
 	stats->rx_packets++;
 
 	return ret;
@@ -2314,6 +2319,15 @@ mvneta_swbm_add_rx_fragment(struct mvneta_port *pp,
 		skb_frag_off_set(frag, pp->rx_offset_correction);
 		skb_frag_size_set(frag, data_len);
 		__skb_frag_set_page(frag, page);
+
+		if (*size <= MVNETA_MAX_RX_BUF_SIZE) {
+			int xdp_data_len;
+
+			xdp_data_len = xdp->data_end - xdp->data +
+				       nfrags * MVNETA_MAX_RX_BUF_SIZE +
+				       data_len;
+			sinfo->xdp_data_len = xdp_data_len;
+		}
 		nfrags++;
 	} else {
 		page_pool_put_full_page(rxq->page_pool, page, true);
@@ -2367,8 +2381,8 @@ static int mvneta_rx_swbm(struct napi_struct *napi,
 	struct net_device *dev = pp->dev;
 	struct mvneta_stats ps = {};
 	struct bpf_prog *xdp_prog;
-	u32 desc_status, frame_sz;
 	struct xdp_buff xdp_buf;
+	u32 desc_status;
 
 	xdp_buf.data_hard_start = NULL;
 	xdp_buf.frame_sz = PAGE_SIZE;
@@ -2402,7 +2416,6 @@ static int mvneta_rx_swbm(struct napi_struct *napi,
 			}
 
 			size = rx_desc->data_size;
-			frame_sz = size - ETH_FCS_LEN;
 			desc_status = rx_status;
 
 			xdp_buf.mb = 0;
@@ -2430,7 +2443,7 @@ static int mvneta_rx_swbm(struct napi_struct *napi,
 		}
 
 		if (xdp_prog &&
-		    mvneta_run_xdp(pp, rxq, xdp_prog, &xdp_buf, frame_sz, &ps))
+		    mvneta_run_xdp(pp, rxq, xdp_prog, &xdp_buf, &ps))
 			goto next;
 
 		skb = mvneta_swbm_build_skb(pp, rxq, &xdp_buf, desc_status);
