@@ -527,12 +527,48 @@ int xdp_alloc_skb_bulk(void **skbs, int n_skb, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(xdp_alloc_skb_bulk);
 
+void xdp_update_skb_shared_info(struct sk_buff *skb, int nr_frags,
+				int size, int truesize,
+				struct skb_shared_info *sinfo)
+{
+	int i;
+
+	skb_shinfo(skb)->nr_frags = nr_frags;
+
+	skb->len += size;
+	skb->data_len += size;
+	skb->truesize += truesize;
+
+	if (skb->pfmemalloc)
+		return;
+
+	for (i = 0; i < nr_frags; i++) {
+		struct page *page = skb_frag_page(&sinfo->frags[i]);
+
+		page = compound_head(page);
+		if (page_is_pfmemalloc(page)) {
+			skb->pfmemalloc = true;
+			break;
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(xdp_update_skb_shared_info);
+
 struct sk_buff *__xdp_build_skb_from_frame(struct xdp_frame *xdpf,
 					   struct sk_buff *skb,
 					   struct net_device *dev)
 {
+	struct skb_shared_info *sinfo = xdp_get_shared_info_from_frame(xdpf);
+	unsigned int num_frags, frag_size, frag_tsize;
 	unsigned int headroom, frame_size;
 	void *hard_start;
+
+	/* xdp multi-buff frame */
+	if (unlikely(xdp_frame_is_mb(xdpf))) {
+		frag_tsize = sinfo->xdp_frags_tsize;
+		frag_size = sinfo->gso_type;
+		num_frags = sinfo->nr_frags;
+	}
 
 	/* Part of headroom was reserved to xdpf */
 	headroom = sizeof(*xdpf) + xdpf->headroom;
@@ -551,6 +587,10 @@ struct sk_buff *__xdp_build_skb_from_frame(struct xdp_frame *xdpf,
 	__skb_put(skb, xdpf->len);
 	if (xdpf->metasize)
 		skb_metadata_set(skb, xdpf->metasize);
+
+	if (unlikely(xdp_frame_is_mb(xdpf)))
+		xdp_update_skb_shared_info(skb, num_frags, frag_size,
+					   frag_tsize, sinfo);
 
 	/* Essential SKB info: protocol and skb->dev */
 	skb->protocol = eth_type_trans(skb, dev);
