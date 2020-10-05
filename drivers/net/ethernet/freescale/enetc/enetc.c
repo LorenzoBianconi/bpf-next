@@ -1014,7 +1014,7 @@ static int enetc_xdp_frame_to_xdp_tx_swbd(struct enetc_bdr *tx_ring,
 					  struct xdp_frame *xdp_frame)
 {
 	struct enetc_tx_swbd *xdp_tx_swbd = &xdp_tx_arr[0];
-	struct skb_shared_info *shinfo;
+	struct xdp_shared_info *shinfo;
 	void *data = xdp_frame->data;
 	int len = xdp_frame->len;
 	skb_frag_t *frag;
@@ -1121,7 +1121,7 @@ static void enetc_map_rx_buff_to_xdp(struct enetc_bdr *rx_ring, int i,
 {
 	struct enetc_rx_swbd *rx_swbd = enetc_get_rx_buff(rx_ring, i, size);
 	void *hard_start = page_address(rx_swbd->page) + rx_swbd->page_offset;
-	struct skb_shared_info *shinfo;
+	struct xdp_shared_info *shinfo;
 
 	/* To be used for XDP_TX */
 	rx_swbd->len = size;
@@ -1136,9 +1136,12 @@ static void enetc_map_rx_buff_to_xdp(struct enetc_bdr *rx_ring, int i,
 static void enetc_add_rx_buff_to_xdp(struct enetc_bdr *rx_ring, int i,
 				     u16 size, struct xdp_buff *xdp_buff)
 {
-	struct skb_shared_info *shinfo = xdp_get_shared_info_from_buff(xdp_buff);
 	struct enetc_rx_swbd *rx_swbd = enetc_get_rx_buff(rx_ring, i, size);
-	skb_frag_t *frag = &shinfo->frags[shinfo->nr_frags];
+	struct xdp_shared_info *shinfo;
+	skb_frag_t *frag;
+
+	shinfo = xdp_get_shared_info_from_buff(xdp_buff);
+	frag = &shinfo->frags[shinfo->nr_frags];
 
 	/* To be used for XDP_TX */
 	rx_swbd->len = size;
