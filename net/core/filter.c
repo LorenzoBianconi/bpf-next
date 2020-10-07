@@ -3855,10 +3855,73 @@ static const struct bpf_func_proto bpf_xdp_adjust_head_proto = {
 	.arg2_type	= ARG_ANYTHING,
 };
 
+static int bpf_xdp_mb_adjust_tail(struct xdp_buff *xdp, int offset)
+{
+	struct skb_shared_info *sinfo = xdp_get_shared_info_from_buff(xdp);
+
+	if (unlikely(sinfo->nr_frags == 0))
+		return -EINVAL;
+
+	if (offset >= 0) {
+		skb_frag_t *frag = &sinfo->frags[sinfo->nr_frags - 1];
+		int size;
+
+		if (unlikely(offset > xdp_get_frag_tailroom(frag)))
+			return -EINVAL;
+
+		size = skb_frag_size(frag);
+		memset(skb_frag_address(frag) + size, 0, offset);
+		skb_frag_size_set(frag, size + offset);
+		sinfo->data_len += offset;
+		xdp->frame_length += offset;
+	} else {
+		int i, frags_to_free = 0;
+
+		offset = abs(offset);
+
+		if (unlikely(offset > ((int)xdp->frame_length - ETH_HLEN)))
+			return -EINVAL;
+
+		for (i = sinfo->nr_frags - 1; i >= 0 && offset > 0; i--) {
+			skb_frag_t *frag = &sinfo->frags[i];
+			int size = skb_frag_size(frag);
+			int shrink = min_t(int, offset, size);
+
+			offset -= shrink;
+			if (likely(size - shrink > 0)) {
+				/* When updating the final fragment we have
+				 * to adjust the data_length in line.
+				 */
+				sinfo->data_len -= shrink;
+				xdp->frame_length -= shrink;
+				skb_frag_size_set(frag, size - shrink);
+				break;
+			}
+
+			/* When we free the fragments,
+			 * xdp_return_frags_from_buff() will take care
+			 * of updating the xdp share info data_length.
+			 */
+			frags_to_free++;
+		}
+
+		if (unlikely(frags_to_free))
+			xdp_return_num_frags_from_buff(xdp, frags_to_free);
+
+		if (unlikely(offset > 0))
+			xdp->data_end -= offset;
+	}
+
+	return 0;
+}
+
 BPF_CALL_2(bpf_xdp_adjust_tail, struct xdp_buff *, xdp, int, offset)
 {
 	void *data_hard_end = xdp_data_hard_end(xdp); /* use xdp->frame_sz */
 	void *data_end = xdp->data_end + offset;
+
+	if (unlikely(xdp_buff_is_mb(xdp)))
+		return bpf_xdp_mb_adjust_tail(xdp, offset);
 
 	/* Notice that xdp_data_hard_end have reserved some tailroom */
 	if (unlikely(data_end > data_hard_end))
