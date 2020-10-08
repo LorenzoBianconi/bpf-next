@@ -368,40 +368,45 @@ static void __xdp_return(void *data, struct xdp_mem_info *mem, bool napi_direct)
 	}
 }
 
-void xdp_return_frame(struct xdp_frame *xdpf)
+static void xdp_return_frags(struct xdp_shared_info *xdp_sinfo,
+			     struct xdp_mem_info *mem,
+			     int nr_frags, bool napi)
 {
-	struct xdp_shared_info *xdp_sinfo;
 	int i;
 
-	if (likely(!xdpf->mb))
-		goto out;
+	nr_frags = min_t(int, nr_frags, xdp_sinfo->nr_frags);
+	for (i = 1; i <= nr_frags; i++) {
+		skb_frag_t *frag = &xdp_sinfo->frags[xdp_sinfo->nr_frags - i];
+		struct page *page = xdp_get_frag_page(frag);
 
-	xdp_sinfo = xdp_get_shared_info_from_frame(xdpf);
-	for (i = 0; i < xdp_sinfo->nr_frags; i++) {
-		struct page *page = xdp_get_frag_page(&xdp_sinfo->frags[i]);
-
-		__xdp_return(page_address(page), &xdpf->mem, false);
+		xdp_sinfo->data_length -= xdp_get_frag_size(frag);
+		__xdp_return(page_address(page), mem, napi);
 	}
-out:
+	xdp_sinfo->nr_frags -= nr_frags;
+}
+
+void xdp_return_frame(struct xdp_frame *xdpf)
+{
+	if (unlikely(xdpf->mb)) {
+		struct xdp_shared_info *xdp_sinfo;
+
+		xdp_sinfo = xdp_get_shared_info_from_frame(xdpf);
+		xdp_return_frags(xdp_sinfo, &xdpf->mem, xdp_sinfo->nr_frags,
+				 false);
+	}
 	__xdp_return(xdpf->data, &xdpf->mem, false);
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame);
 
 void xdp_return_frame_rx_napi(struct xdp_frame *xdpf)
 {
-	struct xdp_shared_info *xdp_sinfo;
-	int i;
+	if (unlikely(xdpf->mb)) {
+		struct xdp_shared_info *xdp_sinfo;
 
-	if (likely(!xdpf->mb))
-		goto out;
-
-	xdp_sinfo = xdp_get_shared_info_from_frame(xdpf);
-	for (i = 0; i < xdp_sinfo->nr_frags; i++) {
-		struct page *page = xdp_get_frag_page(&xdp_sinfo->frags[i]);
-
-		__xdp_return(page_address(page), &xdpf->mem, true);
+		xdp_sinfo = xdp_get_shared_info_from_frame(xdpf);
+		xdp_return_frags(xdp_sinfo, &xdpf->mem, xdp_sinfo->nr_frags,
+				 true);
 	}
-out:
 	__xdp_return(xdpf->data, &xdpf->mem, true);
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame_rx_napi);
@@ -473,21 +478,23 @@ void xdp_return_frame_bulk(struct xdp_frame *xdpf,
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame_bulk);
 
+void xdp_return_frags_from_buff(struct xdp_buff *xdp, int nr_frags)
+{
+	struct xdp_shared_info *xdp_sinfo = xdp_get_shared_info_from_buff(xdp);
+
+	xdp_return_frags(xdp_sinfo, &xdp->rxq->mem, nr_frags, true);
+	xdp->mb = !!xdp_sinfo->nr_frags;
+}
+EXPORT_SYMBOL_GPL(xdp_return_frags_from_buff);
+
 void xdp_return_buff(struct xdp_buff *xdp)
 {
-	struct xdp_shared_info *xdp_sinfo;
-	int i;
+	if (unlikely(xdp->mb)) {
+		struct xdp_shared_info *xdp_sinfo;
 
-	if (likely(!xdp->mb))
-		goto out;
-
-	xdp_sinfo = xdp_get_shared_info_from_buff(xdp);
-	for (i = 0; i < xdp_sinfo->nr_frags; i++) {
-		struct page *page = xdp_get_frag_page(&xdp_sinfo->frags[i]);
-
-		__xdp_return(page_address(page), &xdp->rxq->mem, true);
+		xdp_sinfo = xdp_get_shared_info_from_buff(xdp);
+		xdp_return_frags_from_buff(xdp, xdp_sinfo->nr_frags);
 	}
-out:
 	__xdp_return(xdp->data, &xdp->rxq->mem, true);
 }
 
