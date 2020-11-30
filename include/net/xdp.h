@@ -72,6 +72,9 @@ struct xdp_buff {
 	void *data_hard_start;
 	struct xdp_rxq_info *rxq;
 	struct xdp_txq_info *txq;
+	/* If any of the bitfield lengths for frame_sz or mb below change,
+	 * make sure the defines here are also updated!
+	 */
 #ifdef __BIG_ENDIAN_BITFIELD
 #define MB_SHIFT	  0
 #define MB_MASK		  0x00000001

@@ -8901,7 +8901,7 @@ static u32 xdp_convert_ctx_access(enum bpf_access_type type,
 				  struct bpf_insn *insn_buf,
 				  struct bpf_prog *prog, u32 *target_size)
 {
-	int buff_reg, dst_reg, scratch_reg;
+	int ctx_reg, dst_reg, scratch_reg;
 	struct bpf_insn *insn = insn_buf;
 
 	switch (si->off) {
@@ -8949,52 +8949,56 @@ static u32 xdp_convert_ctx_access(enum bpf_access_type type,
 				      offsetof(struct net_device, ifindex));
 		break;
 	case offsetof(struct xdp_md, frame_length):
-		buff_reg = BPF_REG_9;
+		/* Need tmp storage for src_reg in case src_reg == dst_reg,
+		 * and a scratch reg */
+		scratch_reg = BPF_REG_9;
 		dst_reg = si->dst_reg;
-		scratch_reg = si->src_reg;
 
-		if (si->dst_reg == buff_reg || si->src_reg == buff_reg)
-			buff_reg--;
-		if (si->dst_reg == buff_reg || si->src_reg == buff_reg)
-			buff_reg--;
+		if (dst_reg == scratch_reg)
+			scratch_reg--;
 
-		if (si->dst_reg == si->src_reg) {
-			scratch_reg = buff_reg - 1;
-			if (si->dst_reg == scratch_reg)
-				scratch_reg--;
-		}
+		ctx_reg = (si->src_reg == si->dst_reg) ? scratch_reg - 1 : si->src_reg;
+		while (dst_reg == ctx_reg || scratch_reg == ctx_reg)
+			ctx_reg--;
 
 		/* Save scratch registers */
-		*insn++ = BPF_STX_MEM(BPF_DW, si->src_reg, buff_reg,
+		if (ctx_reg != si->src_reg) {
+			*insn++ = BPF_STX_MEM(BPF_DW, si->src_reg, ctx_reg,
+					      offsetof(struct xdp_buff,
+						       tmp_reg[1]));
+
+			*insn++ = BPF_MOV64_REG(ctx_reg, si->src_reg);
+		}
+
+		*insn++ = BPF_STX_MEM(BPF_DW, ctx_reg, scratch_reg,
 				      offsetof(struct xdp_buff, tmp_reg[0]));
-
-		*insn++ = BPF_MOV64_REG(buff_reg, si->src_reg);
-
-		*insn++ = BPF_STX_MEM(BPF_DW, buff_reg, scratch_reg,
-				      offsetof(struct xdp_buff, tmp_reg[1]));
 
 		/* What does this code do?
 		 *   dst_reg = 0
 		 *
-		 *   if (!buff_reg->mb)
+		 *   if (!ctx_reg->mb)
 		 *      goto no_mb:
 		 *
-		 *   dst_reg = (struct xdp_shared_info *)xdp_data_hard_end(xdp)->data_length
+		 *   dst_reg = (struct xdp_shared_info *)xdp_data_hard_end(xdp)
+		 *   dst_reg = dst_reg->data_length
+		 *
+		 * NOTE: xdp_data_hard_end() is xdp->hard_start +
+		 *       xdp->frame_sz - sizeof(shared_info)
 		 *
 		 * no_mb:
-		 *   dst_reg += buff_reg->data_end - buf_reg->data
+		 *   dst_reg += ctx_reg->data_end - ctx_reg->data
 		 */
 		*insn++ = BPF_MOV64_IMM(dst_reg, 0);
 
-		*insn++ = BPF_LDX_MEM(BPF_W, scratch_reg, buff_reg, MB_OFFSET());
+		*insn++ = BPF_LDX_MEM(BPF_W, scratch_reg, ctx_reg, MB_OFFSET());
 		*insn++ = BPF_ALU32_IMM(BPF_AND, scratch_reg, MB_MASK);
 		*insn++ = BPF_JMP_IMM(BPF_JEQ, scratch_reg, 0, 7); /*goto no_mb; */
 
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct xdp_buff,
 						       data_hard_start),
-				      dst_reg, buff_reg,
+				      dst_reg, ctx_reg,
 				      offsetof(struct xdp_buff, data_hard_start));
-		*insn++ = BPF_LDX_MEM(BPF_W, scratch_reg, buff_reg,
+		*insn++ = BPF_LDX_MEM(BPF_W, scratch_reg, ctx_reg,
 				      FRAME_SZ_OFFSET());
 		*insn++ = BPF_ALU32_IMM(BPF_AND, scratch_reg, FRAME_SZ_MASK);
 		*insn++ = BPF_ALU32_IMM(BPF_RSH, scratch_reg, FRAME_SZ_SHIFT);
@@ -9009,20 +9013,22 @@ static u32 xdp_convert_ctx_access(enum bpf_access_type type,
 
 		/* no_mb: */
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct xdp_buff, data_end),
-				      scratch_reg, buff_reg,
+				      scratch_reg, ctx_reg,
 				      offsetof(struct xdp_buff, data_end));
 		*insn++ = BPF_ALU64_REG(BPF_ADD, dst_reg, scratch_reg);
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct xdp_buff, data),
-				      scratch_reg, buff_reg,
+				      scratch_reg, ctx_reg,
 				      offsetof(struct xdp_buff, data));
 		*insn++ = BPF_ALU64_REG(BPF_SUB, dst_reg, scratch_reg);
 
 		/* Restore scratch registers */
-		*insn++ = BPF_LDX_MEM(BPF_DW, scratch_reg, buff_reg,
-				      offsetof(struct xdp_buff, tmp_reg[1]));
-
-		*insn++ = BPF_LDX_MEM(BPF_DW, buff_reg, buff_reg,
+		*insn++ = BPF_LDX_MEM(BPF_DW, scratch_reg, ctx_reg,
 				      offsetof(struct xdp_buff, tmp_reg[0]));
+
+		if (ctx_reg != si->src_reg)
+			*insn++ = BPF_LDX_MEM(BPF_DW, ctx_reg, ctx_reg,
+					      offsetof(struct xdp_buff,
+						       tmp_reg[1]));
 		break;
 	}
 
