@@ -79,6 +79,13 @@ struct xdp_buff {
 	struct xdp_txq_info *txq;
 	u32 frame_sz; /* frame size to deduce data_hard_end/reserved tailroom*/
 	u16 flags; /* supported values defined in xdp_flags */
+	u32 frame_length; /* Total frame length across all buffers. Only needs
+			   * to be updated by helper functions, as it will be
+			   * initialized at XDP program start. This field only
+			   * needs 17-bits (128kB). In case the remaining bits
+			   * need to be re-purposed, please make sure the
+			   * xdp_convert_ctx_access() function gets updated.
+			   */
 };
 
 static __always_inline bool xdp_buff_is_mb(struct xdp_buff *xdp)
@@ -207,6 +214,14 @@ void xdp_convert_frame_to_buff(struct xdp_frame *frame, struct xdp_buff *xdp)
 	xdp->data_meta = frame->data - frame->metasize;
 	xdp->frame_sz = frame->frame_sz;
 	xdp->flags = frame->flags;
+	xdp->frame_length = frame->len;
+
+	if (unlikely(xdp_buff_is_mb(xdp))) {
+		struct skb_shared_info *sinfo;
+
+		sinfo = xdp_get_shared_info_from_buff(xdp);
+		xdp->frame_length += sinfo->data_len;
+	}
 }
 
 static inline
