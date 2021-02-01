@@ -511,6 +511,7 @@ void xdp_return_num_frags_from_buff(struct xdp_buff *xdp, u16 num_frags)
 		struct page *page = skb_frag_page(frag);
 
 		sinfo->data_len -= skb_frag_size(frag);
+		xdp->frame_length -= skb_frag_size(frag);
 		__xdp_return(page_address(page), &xdp->rxq->mem, false, NULL);
 	}
 
