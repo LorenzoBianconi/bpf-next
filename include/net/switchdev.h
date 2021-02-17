@@ -27,10 +27,12 @@ enum switchdev_attr_id {
 	SWITCHDEV_ATTR_ID_BRIDGE_VLAN_PROTOCOL,
 	SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED,
 	SWITCHDEV_ATTR_ID_BRIDGE_MROUTER,
-#if IS_ENABLED(CONFIG_BRIDGE_MRP)
-	SWITCHDEV_ATTR_ID_MRP_PORT_STATE,
 	SWITCHDEV_ATTR_ID_MRP_PORT_ROLE,
-#endif
+};
+
+struct switchdev_brport_flags {
+	unsigned long val;
+	unsigned long mask;
 };
 
 struct switchdev_attr {
@@ -41,16 +43,13 @@ struct switchdev_attr {
 	void (*complete)(struct net_device *dev, int err, void *priv);
 	union {
 		u8 stp_state;				/* PORT_STP_STATE */
-		unsigned long brport_flags;		/* PORT_{PRE}_BRIDGE_FLAGS */
+		struct switchdev_brport_flags brport_flags; /* PORT_BRIDGE_FLAGS */
 		bool mrouter;				/* PORT_MROUTER */
 		clock_t ageing_time;			/* BRIDGE_AGEING_TIME */
 		bool vlan_filtering;			/* BRIDGE_VLAN_FILTERING */
 		u16 vlan_protocol;			/* BRIDGE_VLAN_PROTOCOL */
 		bool mc_disabled;			/* MC_DISABLED */
-#if IS_ENABLED(CONFIG_BRIDGE_MRP)
-		u8 mrp_port_state;			/* MRP_PORT_STATE */
 		u8 mrp_port_role;			/* MRP_PORT_ROLE */
-#endif
 	} u;
 };
 
@@ -59,7 +58,6 @@ enum switchdev_obj_id {
 	SWITCHDEV_OBJ_ID_PORT_VLAN,
 	SWITCHDEV_OBJ_ID_PORT_MDB,
 	SWITCHDEV_OBJ_ID_HOST_MDB,
-#if IS_ENABLED(CONFIG_BRIDGE_MRP)
 	SWITCHDEV_OBJ_ID_MRP,
 	SWITCHDEV_OBJ_ID_RING_TEST_MRP,
 	SWITCHDEV_OBJ_ID_RING_ROLE_MRP,
@@ -67,8 +65,6 @@ enum switchdev_obj_id {
 	SWITCHDEV_OBJ_ID_IN_TEST_MRP,
 	SWITCHDEV_OBJ_ID_IN_ROLE_MRP,
 	SWITCHDEV_OBJ_ID_IN_STATE_MRP,
-
-#endif
 };
 
 struct switchdev_obj {
@@ -100,7 +96,6 @@ struct switchdev_obj_port_mdb {
 	container_of((OBJ), struct switchdev_obj_port_mdb, obj)
 
 
-#if IS_ENABLED(CONFIG_BRIDGE_MRP)
 /* SWITCHDEV_OBJ_ID_MRP */
 struct switchdev_obj_mrp {
 	struct switchdev_obj obj;
@@ -132,6 +127,7 @@ struct switchdev_obj_ring_role_mrp {
 	struct switchdev_obj obj;
 	u8 ring_role;
 	u32 ring_id;
+	u8 sw_backup;
 };
 
 #define SWITCHDEV_OBJ_RING_ROLE_MRP(OBJ) \
@@ -166,6 +162,7 @@ struct switchdev_obj_in_role_mrp {
 	u32 ring_id;
 	u16 in_id;
 	u8 in_role;
+	u8 sw_backup;
 };
 
 #define SWITCHDEV_OBJ_IN_ROLE_MRP(OBJ) \
@@ -179,8 +176,6 @@ struct switchdev_obj_in_state_mrp {
 
 #define SWITCHDEV_OBJ_IN_STATE_MRP(OBJ) \
 	container_of((OBJ), struct switchdev_obj_in_state_mrp, obj)
-
-#endif
 
 typedef int switchdev_obj_dump_cb_t(struct switchdev_obj *obj);
 
@@ -244,7 +239,8 @@ switchdev_notifier_info_to_extack(const struct switchdev_notifier_info *info)
 
 void switchdev_deferred_process(void);
 int switchdev_port_attr_set(struct net_device *dev,
-			    const struct switchdev_attr *attr);
+			    const struct switchdev_attr *attr,
+			    struct netlink_ext_ack *extack);
 int switchdev_port_obj_add(struct net_device *dev,
 			   const struct switchdev_obj *obj,
 			   struct netlink_ext_ack *extack);
@@ -283,7 +279,8 @@ int switchdev_handle_port_attr_set(struct net_device *dev,
 			struct switchdev_notifier_port_attr_info *port_attr_info,
 			bool (*check_cb)(const struct net_device *dev),
 			int (*set_cb)(struct net_device *dev,
-				      const struct switchdev_attr *attr));
+				      const struct switchdev_attr *attr,
+				      struct netlink_ext_ack *extack));
 #else
 
 static inline void switchdev_deferred_process(void)
@@ -291,7 +288,8 @@ static inline void switchdev_deferred_process(void)
 }
 
 static inline int switchdev_port_attr_set(struct net_device *dev,
-					  const struct switchdev_attr *attr)
+					  const struct switchdev_attr *attr,
+					  struct netlink_ext_ack *extack)
 {
 	return -EOPNOTSUPP;
 }
@@ -374,7 +372,8 @@ switchdev_handle_port_attr_set(struct net_device *dev,
 			struct switchdev_notifier_port_attr_info *port_attr_info,
 			bool (*check_cb)(const struct net_device *dev),
 			int (*set_cb)(struct net_device *dev,
-				      const struct switchdev_attr *attr))
+				      const struct switchdev_attr *attr,
+				      struct netlink_ext_ack *extack))
 {
 	return 0;
 }

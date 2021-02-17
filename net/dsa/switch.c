@@ -106,6 +106,7 @@ static int dsa_switch_bridge_leave(struct dsa_switch *ds,
 {
 	bool unset_vlan_filtering = br_vlan_enabled(info->br);
 	struct dsa_switch_tree *dst = ds->dst;
+	struct netlink_ext_ack extack = {0};
 	int err, i;
 
 	if (dst->index == info->tree_index && ds->index == info->sw_index &&
@@ -137,7 +138,10 @@ static int dsa_switch_bridge_leave(struct dsa_switch *ds,
 	}
 	if (unset_vlan_filtering) {
 		err = dsa_port_vlan_filtering(dsa_to_port(ds, info->port),
-					      false);
+					      false, &extack);
+		if (extack._msg)
+			dev_err(ds->dev, "port %d: %s\n", info->port,
+				extack._msg);
 		if (err && err != EOPNOTSUPP)
 			return err;
 	}
@@ -164,6 +168,24 @@ static int dsa_switch_fdb_del(struct dsa_switch *ds,
 		return -EOPNOTSUPP;
 
 	return ds->ops->port_fdb_del(ds, port, info->addr, info->vid);
+}
+
+static int dsa_switch_hsr_join(struct dsa_switch *ds,
+			       struct dsa_notifier_hsr_info *info)
+{
+	if (ds->index == info->sw_index && ds->ops->port_hsr_join)
+		return ds->ops->port_hsr_join(ds, info->port, info->hsr);
+
+	return -EOPNOTSUPP;
+}
+
+static int dsa_switch_hsr_leave(struct dsa_switch *ds,
+				struct dsa_notifier_hsr_info *info)
+{
+	if (ds->index == info->sw_index && ds->ops->port_hsr_leave)
+		return ds->ops->port_hsr_leave(ds, info->port, info->hsr);
+
+	return -EOPNOTSUPP;
 }
 
 static int dsa_switch_lag_change(struct dsa_switch *ds,
@@ -273,7 +295,8 @@ static int dsa_switch_vlan_add(struct dsa_switch *ds,
 
 	for (port = 0; port < ds->num_ports; port++) {
 		if (dsa_switch_vlan_match(ds, port, info)) {
-			err = ds->ops->port_vlan_add(ds, port, info->vlan);
+			err = ds->ops->port_vlan_add(ds, port, info->vlan,
+						     info->extack);
 			if (err)
 				return err;
 		}
@@ -294,6 +317,151 @@ static int dsa_switch_vlan_del(struct dsa_switch *ds,
 	/* Do not deprogram the DSA links as they may be used as conduit
 	 * for other VLAN members in the fabric.
 	 */
+	return 0;
+}
+
+static bool dsa_switch_tag_proto_match(struct dsa_switch *ds, int port,
+				       struct dsa_notifier_tag_proto_info *info)
+{
+	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
+		return true;
+
+	return false;
+}
+
+static int dsa_switch_change_tag_proto(struct dsa_switch *ds,
+				       struct dsa_notifier_tag_proto_info *info)
+{
+	const struct dsa_device_ops *tag_ops = info->tag_ops;
+	int port, err;
+
+	if (!ds->ops->change_tag_protocol)
+		return -EOPNOTSUPP;
+
+	ASSERT_RTNL();
+
+	for (port = 0; port < ds->num_ports; port++) {
+		if (dsa_switch_tag_proto_match(ds, port, info)) {
+			err = ds->ops->change_tag_protocol(ds, port,
+							   tag_ops->proto);
+			if (err)
+				return err;
+
+			if (dsa_is_cpu_port(ds, port))
+				dsa_port_set_tag_protocol(dsa_to_port(ds, port),
+							  tag_ops);
+		}
+	}
+
+	/* Now that changing the tag protocol can no longer fail, let's update
+	 * the remaining bits which are "duplicated for faster access", and the
+	 * bits that depend on the tagger, such as the MTU.
+	 */
+	for (port = 0; port < ds->num_ports; port++) {
+		if (dsa_is_user_port(ds, port)) {
+			struct net_device *slave;
+
+			slave = dsa_to_port(ds, port)->slave;
+			dsa_slave_setup_tagger(slave);
+
+			/* rtnl_mutex is held in dsa_tree_change_tag_proto */
+			dsa_slave_change_mtu(slave, slave->mtu);
+		}
+	}
+
+	return 0;
+}
+
+static bool dsa_switch_mrp_match(struct dsa_switch *ds, int port,
+				 struct dsa_notifier_mrp_info *info)
+{
+	if (ds->index == info->sw_index && port == info->port)
+		return true;
+
+	if (dsa_is_dsa_port(ds, port))
+		return true;
+
+	return false;
+}
+
+static int dsa_switch_mrp_add(struct dsa_switch *ds,
+			      struct dsa_notifier_mrp_info *info)
+{
+	int err = 0;
+	int port;
+
+	if (!ds->ops->port_mrp_add)
+		return -EOPNOTSUPP;
+
+	for (port = 0; port < ds->num_ports; port++) {
+		if (dsa_switch_mrp_match(ds, port, info)) {
+			err = ds->ops->port_mrp_add(ds, port, info->mrp);
+			if (err)
+				break;
+		}
+	}
+
+	return err;
+}
+
+static int dsa_switch_mrp_del(struct dsa_switch *ds,
+			      struct dsa_notifier_mrp_info *info)
+{
+	if (!ds->ops->port_mrp_del)
+		return -EOPNOTSUPP;
+
+	if (ds->index == info->sw_index)
+		return ds->ops->port_mrp_del(ds, info->port, info->mrp);
+
+	return 0;
+}
+
+static bool
+dsa_switch_mrp_ring_role_match(struct dsa_switch *ds, int port,
+			       struct dsa_notifier_mrp_ring_role_info *info)
+{
+	if (ds->index == info->sw_index && port == info->port)
+		return true;
+
+	if (dsa_is_dsa_port(ds, port))
+		return true;
+
+	return false;
+}
+
+static int
+dsa_switch_mrp_add_ring_role(struct dsa_switch *ds,
+			     struct dsa_notifier_mrp_ring_role_info *info)
+{
+	int err = 0;
+	int port;
+
+	if (!ds->ops->port_mrp_add)
+		return -EOPNOTSUPP;
+
+	for (port = 0; port < ds->num_ports; port++) {
+		if (dsa_switch_mrp_ring_role_match(ds, port, info)) {
+			err = ds->ops->port_mrp_add_ring_role(ds, port,
+							      info->mrp);
+			if (err)
+				break;
+		}
+	}
+
+	return err;
+}
+
+static int
+dsa_switch_mrp_del_ring_role(struct dsa_switch *ds,
+			     struct dsa_notifier_mrp_ring_role_info *info)
+{
+	if (!ds->ops->port_mrp_del)
+		return -EOPNOTSUPP;
+
+	if (ds->index == info->sw_index)
+		return ds->ops->port_mrp_del_ring_role(ds, info->port,
+						       info->mrp);
+
 	return 0;
 }
 
@@ -319,6 +487,12 @@ static int dsa_switch_event(struct notifier_block *nb,
 	case DSA_NOTIFIER_FDB_DEL:
 		err = dsa_switch_fdb_del(ds, info);
 		break;
+	case DSA_NOTIFIER_HSR_JOIN:
+		err = dsa_switch_hsr_join(ds, info);
+		break;
+	case DSA_NOTIFIER_HSR_LEAVE:
+		err = dsa_switch_hsr_leave(ds, info);
+		break;
 	case DSA_NOTIFIER_LAG_CHANGE:
 		err = dsa_switch_lag_change(ds, info);
 		break;
@@ -342,6 +516,21 @@ static int dsa_switch_event(struct notifier_block *nb,
 		break;
 	case DSA_NOTIFIER_MTU:
 		err = dsa_switch_mtu(ds, info);
+		break;
+	case DSA_NOTIFIER_TAG_PROTO:
+		err = dsa_switch_change_tag_proto(ds, info);
+		break;
+	case DSA_NOTIFIER_MRP_ADD:
+		err = dsa_switch_mrp_add(ds, info);
+		break;
+	case DSA_NOTIFIER_MRP_DEL:
+		err = dsa_switch_mrp_del(ds, info);
+		break;
+	case DSA_NOTIFIER_MRP_ADD_RING_ROLE:
+		err = dsa_switch_mrp_add_ring_role(ds, info);
+		break;
+	case DSA_NOTIFIER_MRP_DEL_RING_ROLE:
+		err = dsa_switch_mrp_del_ring_role(ds, info);
 		break;
 	default:
 		err = -EOPNOTSUPP;

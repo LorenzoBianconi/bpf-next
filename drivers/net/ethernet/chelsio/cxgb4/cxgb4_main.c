@@ -3201,8 +3201,6 @@ static void cxgb4_mgmt_fill_vf_station_mac_addr(struct adapter *adap)
 	int err;
 	u8 *na;
 
-	adap->params.pci.vpd_cap_addr = pci_find_capability(adap->pdev,
-							    PCI_CAP_ID_VPD);
 	err = t4_get_raw_vpd_params(adap, &adap->params.vpd);
 	if (err)
 		return;
@@ -5137,7 +5135,7 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 
 	/* See if FW supports FW_FILTER2 work request */
 	if (is_t4(adap->params.chip)) {
-		adap->params.filter2_wr_support = 0;
+		adap->params.filter2_wr_support = false;
 	} else {
 		params[0] = FW_PARAM_DEV(FILTER2_WR);
 		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,

@@ -47,6 +47,8 @@ struct phylink_link_state;
 #define DSA_TAG_PROTO_RTL4_A_VALUE		17
 #define DSA_TAG_PROTO_HELLCREEK_VALUE		18
 #define DSA_TAG_PROTO_XRS700X_VALUE		19
+#define DSA_TAG_PROTO_OCELOT_8021Q_VALUE	20
+#define DSA_TAG_PROTO_SEVILLE_VALUE		21
 
 enum dsa_tag_protocol {
 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
@@ -69,6 +71,8 @@ enum dsa_tag_protocol {
 	DSA_TAG_PROTO_RTL4_A		= DSA_TAG_PROTO_RTL4_A_VALUE,
 	DSA_TAG_PROTO_HELLCREEK		= DSA_TAG_PROTO_HELLCREEK_VALUE,
 	DSA_TAG_PROTO_XRS700X		= DSA_TAG_PROTO_XRS700X_VALUE,
+	DSA_TAG_PROTO_OCELOT_8021Q	= DSA_TAG_PROTO_OCELOT_8021Q_VALUE,
+	DSA_TAG_PROTO_SEVILLE		= DSA_TAG_PROTO_SEVILLE_VALUE,
 };
 
 struct packet_type;
@@ -140,6 +144,9 @@ struct dsa_switch_tree {
 	/* Has this tree been applied to the hardware? */
 	bool setup;
 
+	/* Tagging protocol operations */
+	const struct dsa_device_ops *tag_ops;
+
 	/*
 	 * Configuration data for the platform device that owns
 	 * this dsa switch tree instance.
@@ -166,6 +173,10 @@ struct dsa_switch_tree {
 #define dsa_lag_foreach_port(_dp, _dst, _lag)			\
 	list_for_each_entry((_dp), &(_dst)->ports, list)	\
 		if ((_dp)->lag_dev == (_lag))
+
+#define dsa_hsr_foreach_port(_dp, _ds, _hsr)			\
+	list_for_each_entry((_dp), &(_ds)->dst->ports, list)	\
+		if ((_dp)->ds == (_ds) && (_dp)->hsr_dev == (_hsr))
 
 static inline struct net_device *dsa_lag_dev(struct dsa_switch_tree *dst,
 					     unsigned int id)
@@ -225,7 +236,9 @@ struct dsa_port {
 		struct net_device *slave;
 	};
 
-	/* CPU port tagging operations used by master or slave devices */
+	/* Copy of the tagging protocol operations, for quicker access
+	 * in the data path. Valid only for the CPU ports.
+	 */
 	const struct dsa_device_ops *tag_ops;
 
 	/* Copies for faster access in master receive hot path */
@@ -257,6 +270,7 @@ struct dsa_port {
 	struct phylink_config	pl_config;
 	struct net_device	*lag_dev;
 	bool			lag_tx_enabled;
+	struct net_device	*hsr_dev;
 
 	struct list_head list;
 
@@ -480,9 +494,18 @@ static inline bool dsa_port_is_vlan_filtering(const struct dsa_port *dp)
 typedef int dsa_fdb_dump_cb_t(const unsigned char *addr, u16 vid,
 			      bool is_static, void *data);
 struct dsa_switch_ops {
+	/*
+	 * Tagging protocol helpers called for the CPU ports and DSA links.
+	 * @get_tag_protocol retrieves the initial tagging protocol and is
+	 * mandatory. Switches which can operate using multiple tagging
+	 * protocols should implement @change_tag_protocol and report in
+	 * @get_tag_protocol the tagger in current use.
+	 */
 	enum dsa_tag_protocol (*get_tag_protocol)(struct dsa_switch *ds,
 						  int port,
 						  enum dsa_tag_protocol mprot);
+	int	(*change_tag_protocol)(struct dsa_switch *ds, int port,
+				       enum dsa_tag_protocol proto);
 
 	int	(*setup)(struct dsa_switch *ds);
 	void	(*teardown)(struct dsa_switch *ds);
@@ -605,16 +628,24 @@ struct dsa_switch_ops {
 	void	(*port_stp_state_set)(struct dsa_switch *ds, int port,
 				      u8 state);
 	void	(*port_fast_age)(struct dsa_switch *ds, int port);
-	int	(*port_egress_floods)(struct dsa_switch *ds, int port,
-				      bool unicast, bool multicast);
+	int	(*port_pre_bridge_flags)(struct dsa_switch *ds, int port,
+					 struct switchdev_brport_flags flags,
+					 struct netlink_ext_ack *extack);
+	int	(*port_bridge_flags)(struct dsa_switch *ds, int port,
+				     struct switchdev_brport_flags flags,
+				     struct netlink_ext_ack *extack);
+	int	(*port_set_mrouter)(struct dsa_switch *ds, int port, bool mrouter,
+				    struct netlink_ext_ack *extack);
 
 	/*
 	 * VLAN support
 	 */
 	int	(*port_vlan_filtering)(struct dsa_switch *ds, int port,
-				       bool vlan_filtering);
+				       bool vlan_filtering,
+				       struct netlink_ext_ack *extack);
 	int	(*port_vlan_add)(struct dsa_switch *ds, int port,
-				 const struct switchdev_obj_port_vlan *vlan);
+				 const struct switchdev_obj_port_vlan *vlan,
+				 struct netlink_ext_ack *extack);
 	int	(*port_vlan_del)(struct dsa_switch *ds, int port,
 				 const struct switchdev_obj_port_vlan *vlan);
 	/*
@@ -753,6 +784,26 @@ struct dsa_switch_ops {
 				 struct netdev_lag_upper_info *info);
 	int	(*port_lag_leave)(struct dsa_switch *ds, int port,
 				  struct net_device *lag);
+
+	/*
+	 * HSR integration
+	 */
+	int	(*port_hsr_join)(struct dsa_switch *ds, int port,
+				 struct net_device *hsr);
+	int	(*port_hsr_leave)(struct dsa_switch *ds, int port,
+				  struct net_device *hsr);
+
+	/*
+	 * MRP integration
+	 */
+	int	(*port_mrp_add)(struct dsa_switch *ds, int port,
+				const struct switchdev_obj_mrp *mrp);
+	int	(*port_mrp_del)(struct dsa_switch *ds, int port,
+				const struct switchdev_obj_mrp *mrp);
+	int	(*port_mrp_add_ring_role)(struct dsa_switch *ds, int port,
+					  const struct switchdev_obj_ring_role_mrp *mrp);
+	int	(*port_mrp_del_ring_role)(struct dsa_switch *ds, int port,
+					  const struct switchdev_obj_ring_role_mrp *mrp);
 };
 
 #define DSA_DEVLINK_PARAM_DRIVER(_id, _name, _type, _cmodes)		\

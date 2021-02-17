@@ -237,9 +237,8 @@ skb_flow_dissect_set_enc_addr_type(enum flow_dissector_key_id type,
 void
 skb_flow_dissect_ct(const struct sk_buff *skb,
 		    struct flow_dissector *flow_dissector,
-		    void *target_container,
-		    u16 *ctinfo_map,
-		    size_t mapsize)
+		    void *target_container, u16 *ctinfo_map,
+		    size_t mapsize, bool post_ct)
 {
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	struct flow_dissector_key_ct *key;
@@ -251,12 +250,18 @@ skb_flow_dissect_ct(const struct sk_buff *skb,
 		return;
 
 	ct = nf_ct_get(skb, &ctinfo);
-	if (!ct)
+	if (!ct && !post_ct)
 		return;
 
 	key = skb_flow_dissector_target(flow_dissector,
 					FLOW_DISSECTOR_KEY_CT,
 					target_container);
+
+	if (!ct) {
+		key->ct_state = TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+				TCA_FLOWER_KEY_CT_FLAGS_INVALID;
+		return;
+	}
 
 	if (ctinfo < mapsize)
 		key->ct_state = ctinfo_map[ctinfo];
@@ -1051,6 +1056,9 @@ proto_again:
 			key_control->addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
 		}
 
+		__skb_flow_dissect_ipv4(skb, flow_dissector,
+					target_container, data, iph);
+
 		if (ip_is_fragment(iph)) {
 			key_control->flags |= FLOW_DIS_IS_FRAGMENT;
 
@@ -1066,9 +1074,6 @@ proto_again:
 				}
 			}
 		}
-
-		__skb_flow_dissect_ipv4(skb, flow_dissector,
-					target_container, data, iph);
 
 		break;
 	}

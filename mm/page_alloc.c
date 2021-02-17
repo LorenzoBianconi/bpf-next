@@ -1207,8 +1207,10 @@ static void kernel_init_free_pages(struct page *page, int numpages)
 	/* s390's use of memset() could override KASAN redzones. */
 	kasan_disable_current();
 	for (i = 0; i < numpages; i++) {
+		u8 tag = page_kasan_tag(page + i);
 		page_kasan_tag_reset(page + i);
 		clear_highpage(page + i);
+		page_kasan_tag_set(page + i, tag);
 	}
 	kasan_enable_current();
 }
@@ -5135,8 +5137,9 @@ void __page_frag_cache_drain(struct page *page, unsigned int count)
 }
 EXPORT_SYMBOL(__page_frag_cache_drain);
 
-void *page_frag_alloc(struct page_frag_cache *nc,
-		      unsigned int fragsz, gfp_t gfp_mask)
+void *page_frag_alloc_align(struct page_frag_cache *nc,
+		      unsigned int fragsz, gfp_t gfp_mask,
+		      unsigned int align_mask)
 {
 	unsigned int size = PAGE_SIZE;
 	struct page *page;
@@ -5188,11 +5191,12 @@ refill:
 	}
 
 	nc->pagecnt_bias--;
+	offset &= align_mask;
 	nc->offset = offset;
 
 	return nc->va + offset;
 }
-EXPORT_SYMBOL(page_frag_alloc);
+EXPORT_SYMBOL(page_frag_alloc_align);
 
 /*
  * Frees a page fragment allocated out of either a compound or order 0 page.
