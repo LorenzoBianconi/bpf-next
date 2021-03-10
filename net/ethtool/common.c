@@ -5,6 +5,7 @@
 #include <linux/phy.h>
 #include <linux/rtnetlink.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/xdp_features.h>
 
 #include "common.h"
 
@@ -455,6 +456,9 @@ const char udp_tunnel_type_names[][ETH_GSTRING_LEN] = {
 };
 static_assert(ARRAY_SIZE(udp_tunnel_type_names) ==
 	      __ETHTOOL_UDP_TUNNEL_TYPE_CNT);
+
+DECLARE_XDP_FEATURES_TABLE(xdp_features_strings, ETH_GSTRING_LEN);
+static_assert(ARRAY_SIZE(xdp_features_strings) == XDP_FEATURES_COUNT);
 
 /* return false if legacy contained non-0 deprecated fields
  * maxtxpkt/maxrxpkt. rest of ksettings always updated

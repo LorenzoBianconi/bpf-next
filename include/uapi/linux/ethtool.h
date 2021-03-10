@@ -708,6 +708,7 @@ enum ethtool_stringset {
 	ETH_SS_STATS_ETH_MAC,
 	ETH_SS_STATS_ETH_CTRL,
 	ETH_SS_STATS_RMON,
+	ETH_SS_XDP_FEATURES,
 
 	/* add new constants above here */
 	ETH_SS_COUNT

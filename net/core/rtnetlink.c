@@ -1015,6 +1015,14 @@ static size_t rtnl_xdp_size(void)
 	return xdp_size;
 }
 
+static size_t rtnl_xdp_features_size(void)
+{
+	size_t xdp_size = nla_total_size(0) +	/* nest IFLA_XDP_FEATURES */
+			  XDP_FEATURES_WORDS * nla_total_size(4);
+
+	return xdp_size;
+}
+
 static size_t rtnl_prop_list_size(const struct net_device *dev)
 {
 	struct netdev_name_node *name_node;
@@ -1091,6 +1099,7 @@ static noinline size_t if_nlmsg_size(const struct net_device *dev,
 	       + nla_total_size(4)  /* IFLA_MAX_MTU */
 	       + rtnl_prop_list_size(dev)
 	       + nla_total_size(MAX_ADDR_LEN) /* IFLA_PERM_ADDRESS */
+	       + rtnl_xdp_features_size() /* IFLA_XDP_FEATURES */
 	       + 0;
 }
 
@@ -1534,6 +1543,26 @@ err_cancel:
 	return err;
 }
 
+static int rtnl_xdp_features_fill(struct sk_buff *skb, struct net_device *dev)
+{
+	struct nlattr *attr;
+
+	attr = nla_nest_start(skb, IFLA_XDP_FEATURES);
+	if (!attr)
+		goto err_cancel;
+
+	BUILD_BUG_ON(XDP_FEATURES_WORDS != 1);
+	if (nla_put_u32(skb, IFLA_XDP_FEATURES_BITS_WORD, dev->xdp_features))
+		goto err_cancel;
+
+	nla_nest_end(skb, attr);
+	return 0;
+
+err_cancel:
+	nla_nest_cancel(skb, attr);
+	return -EMSGSIZE;
+}
+
 static u32 rtnl_get_event(unsigned long event)
 {
 	u32 rtnl_event_type = IFLA_EVENT_NONE;
@@ -1865,6 +1894,9 @@ static int rtnl_fill_ifinfo(struct sk_buff *skb,
 			   dev->dev.parent->bus->name))
 		goto nla_put_failure;
 
+	if (rtnl_xdp_features_fill(skb, dev))
+		goto nla_put_failure;
+
 	nlmsg_end(skb, nlh);
 	return 0;
 
@@ -1929,6 +1961,7 @@ static const struct nla_policy ifla_policy[IFLA_MAX+1] = {
 	[IFLA_TSO_MAX_SIZE]	= { .type = NLA_REJECT },
 	[IFLA_TSO_MAX_SEGS]	= { .type = NLA_REJECT },
 	[IFLA_ALLMULTI]		= { .type = NLA_REJECT },
+	[IFLA_XDP_FEATURES]	= { .type = NLA_NESTED },
 };
 
 static const struct nla_policy ifla_info_policy[IFLA_INFO_MAX+1] = {
