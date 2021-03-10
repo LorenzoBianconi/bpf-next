@@ -410,6 +410,21 @@ struct netdev_bpf;
 void xdp_attachment_setup(struct xdp_attachment_info *info,
 			  struct netdev_bpf *bpf);
 
+#if defined(CONFIG_NET) && defined(CONFIG_BPF_SYSCALL)
+void xdp_features_set_redirect_target(struct net_device *dev, bool support_sg);
+void xdp_features_clear_redirect_target(struct net_device *dev);
+#else
+static inline void
+xdp_features_set_redirect_target(struct net_device *dev, bool support_sg)
+{
+}
+
+static inline void
+xdp_features_clear_redirect_target(struct net_device *dev)
+{
+}
+#endif
+
 #define DEV_MAP_BULK_SIZE XDP_BULK_QUEUE_SIZE
 
 #define XDP_METADATA_KFUNC_xxx	\
