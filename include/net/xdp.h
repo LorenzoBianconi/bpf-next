@@ -410,6 +410,37 @@ struct netdev_bpf;
 void xdp_attachment_setup(struct xdp_attachment_info *info,
 			  struct netdev_bpf *bpf);
 
+#if defined(CONFIG_NET) && defined(CONFIG_BPF_SYSCALL)
+
+static inline void
+xdp_features_set_redirect_target(xdp_features_t *xdp_features, bool support_sg)
+{
+	*xdp_features |= NETDEV_XDP_ACT_NDO_XMIT;
+	if (support_sg)
+		*xdp_features |= NETDEV_XDP_ACT_NDO_XMIT_SG;
+}
+
+static inline void
+xdp_features_clear_redirect_target(xdp_features_t *xdp_features)
+{
+	*xdp_features &= ~(NETDEV_XDP_ACT_NDO_XMIT |
+			   NETDEV_XDP_ACT_NDO_XMIT_SG);
+}
+
+#else
+
+static inline void
+xdp_features_set_redirect_target(xdp_features_t *xdp_features, bool support_sg)
+{
+}
+
+static inline void
+xdp_features_clear_redirect_target(xdp_features_t *xdp_features)
+{
+}
+
+#endif
+
 #define DEV_MAP_BULK_SIZE XDP_BULK_QUEUE_SIZE
 
 #endif /* __LINUX_NET_XDP_H__ */
