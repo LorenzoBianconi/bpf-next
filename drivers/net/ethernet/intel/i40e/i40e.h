@@ -321,6 +321,7 @@ struct i40e_udp_port_config {
 	u8 filter_index;
 };
 
+#define I40E_RXD_EOF BIT(I40E_RX_DESC_STATUS_EOF_SHIFT)
 #define I40_DDP_FLASH_REGION 100
 #define I40E_PROFILE_INFO_SIZE 48
 #define I40E_MAX_PROFILE_NUM 16

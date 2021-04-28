@@ -377,9 +377,9 @@ struct i40e_ring {
 
 	struct rcu_head rcu;		/* to avoid race on free */
 	u16 next_to_alloc;
-	struct sk_buff *skb;		/* When i40e_clean_rx_ring_irq() must
+	union i40e_rx_desc  *next_desc;		/* When i40e_clean_rx_ring_irq() must
 					 * return before it sees the EOP for
-					 * the current packet, we save that skb
+					 * the current packet, we save that desc
 					 * here and resume receiving this
 					 * packet the next time
 					 * i40e_clean_rx_ring_irq() is called
