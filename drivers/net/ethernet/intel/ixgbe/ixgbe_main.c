@@ -1457,30 +1457,20 @@ static inline bool ixgbe_rx_is_fcoe(struct ixgbe_ring *ring,
 }
 
 #endif /* IXGBE_FCOE */
+
 /**
- * ixgbe_rx_checksum - indicate in skb if hw indicated a good cksum
+ * ixgbe_rx_xdp_checksum - indicate in xdp_buff if hw indicated a good cksum
  * @ring: structure containing ring specific data
  * @rx_desc: current Rx descriptor being processed
- * @skb: skb currently being received and modified
+ * @xdp: xdp buffer currently being received and modified
  **/
-static inline void ixgbe_rx_checksum(struct ixgbe_ring *ring,
-				     union ixgbe_adv_rx_desc *rx_desc,
-				     struct sk_buff *skb)
+void ixgbe_rx_xdp_checksum(struct ixgbe_ring *ring,
+			   union ixgbe_adv_rx_desc *rx_desc,
+			   struct xdp_buff *xdp)
 {
-	__le16 pkt_info = rx_desc->wb.lower.lo_dword.hs_rss.pkt_info;
-	bool encap_pkt = false;
-
-	skb_checksum_none_assert(skb);
-
 	/* Rx csum disabled */
 	if (!(ring->netdev->features & NETIF_F_RXCSUM))
 		return;
-
-	/* check for VXLAN and Geneve packets */
-	if (pkt_info & cpu_to_le16(IXGBE_RXDADV_PKTTYPE_VXLAN)) {
-		encap_pkt = true;
-		skb->encapsulation = 1;
-	}
 
 	/* if IP and error */
 	if (ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_IPCS) &&
@@ -1493,6 +1483,8 @@ static inline void ixgbe_rx_checksum(struct ixgbe_ring *ring,
 		return;
 
 	if (ixgbe_test_staterr(rx_desc, IXGBE_RXDADV_ERR_TCPE)) {
+		__le16 pkt_info = rx_desc->wb.lower.lo_dword.hs_rss.pkt_info;
+
 		/*
 		 * 82599 errata, UDP frames with a 0 checksum can be marked as
 		 * checksum errors.
@@ -1506,8 +1498,35 @@ static inline void ixgbe_rx_checksum(struct ixgbe_ring *ring,
 	}
 
 	/* It must be a TCP or UDP packet with a valid checksum */
-	skb->ip_summed = CHECKSUM_UNNECESSARY;
-	if (encap_pkt) {
+	xdp->flags = XDP_CSUM_UNNECESSARY;
+}
+
+/**
+ * ixgbe_rx_checksum - indicate in skb if hw indicated a good cksum
+ * @ring: structure containing ring specific data
+ * @rx_desc: current Rx descriptor being processed
+ * @skb: skb currently being received and modified
+ * @xdp: xdp buffer currently being received and modified
+ **/
+static inline void ixgbe_rx_checksum(struct ixgbe_ring *ring,
+				     union ixgbe_adv_rx_desc *rx_desc,
+				     struct sk_buff *skb,
+				     struct xdp_buff *xdp)
+{
+	__le16 pkt_info = rx_desc->wb.lower.lo_dword.hs_rss.pkt_info;
+	bool encap_pkt = false;
+
+	skb_checksum_none_assert(skb);
+
+	/* check for VXLAN and Geneve packets */
+	if (pkt_info & cpu_to_le16(IXGBE_RXDADV_PKTTYPE_VXLAN)) {
+		encap_pkt = true;
+		skb->encapsulation = 1;
+	}
+
+	xdp_buff_get_csum(xdp, skb);
+	/* It must be a TCP or UDP packet with a valid checksum */
+	if (encap_pkt && skb->ip_summed == CHECKSUM_UNNECESSARY) {
 		if (!ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_OUTERIPCS))
 			return;
 
@@ -1671,6 +1690,7 @@ static void ixgbe_update_rsc_stats(struct ixgbe_ring *rx_ring,
  * @rx_ring: rx descriptor ring packet is being transacted on
  * @rx_desc: pointer to the EOP Rx descriptor
  * @skb: pointer to current skb being populated
+ * @xdp: pointer to current xdp buffer
  *
  * This function checks the ring, descriptor, and packet information in
  * order to populate the hash, checksum, VLAN, timestamp, protocol, and
@@ -1678,7 +1698,8 @@ static void ixgbe_update_rsc_stats(struct ixgbe_ring *rx_ring,
  **/
 void ixgbe_process_skb_fields(struct ixgbe_ring *rx_ring,
 			      union ixgbe_adv_rx_desc *rx_desc,
-			      struct sk_buff *skb)
+			      struct sk_buff *skb,
+			      struct xdp_buff *xdp)
 {
 	struct net_device *dev = rx_ring->netdev;
 	u32 flags = rx_ring->q_vector->adapter->flags;
@@ -1687,7 +1708,7 @@ void ixgbe_process_skb_fields(struct ixgbe_ring *rx_ring,
 
 	ixgbe_rx_hash(rx_ring, rx_desc, skb);
 
-	ixgbe_rx_checksum(rx_ring, rx_desc, skb);
+	ixgbe_rx_checksum(rx_ring, rx_desc, skb, xdp);
 
 	if (unlikely(flags & IXGBE_FLAG_RX_HWTSTAMP_ENABLED))
 		ixgbe_ptp_rx_hwtstamp(rx_ring, rx_desc, skb);
@@ -2340,6 +2361,7 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 			/* At larger PAGE_SIZE, frame_sz depend on len size */
 			xdp.frame_sz = ixgbe_rx_frame_truesize(rx_ring, size);
 #endif
+			ixgbe_rx_xdp_checksum(rx_ring, rx_desc, &xdp);
 			skb = ixgbe_run_xdp(adapter, rx_ring, &xdp);
 		}
 
@@ -2386,7 +2408,7 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		total_rx_bytes += skb->len;
 
 		/* populate checksum, timestamp, VLAN, and protocol */
-		ixgbe_process_skb_fields(rx_ring, rx_desc, skb);
+		ixgbe_process_skb_fields(rx_ring, rx_desc, skb, &xdp);
 
 #ifdef IXGBE_FCOE
 		/* if ddp, not passing to ULD unless for FCP_RSP or error */

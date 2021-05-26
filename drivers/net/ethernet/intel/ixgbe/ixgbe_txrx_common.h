@@ -19,7 +19,10 @@ bool ixgbe_cleanup_headers(struct ixgbe_ring *rx_ring,
 			   struct sk_buff *skb);
 void ixgbe_process_skb_fields(struct ixgbe_ring *rx_ring,
 			      union ixgbe_adv_rx_desc *rx_desc,
-			      struct sk_buff *skb);
+			      struct sk_buff *skb, struct xdp_buff *xdp);
+void ixgbe_rx_xdp_checksum(struct ixgbe_ring *ring,
+			   union ixgbe_adv_rx_desc *rx_desc,
+			   struct xdp_buff *xdp);
 void ixgbe_rx_skb(struct ixgbe_q_vector *q_vector,
 		  struct sk_buff *skb);
 void ixgbe_xdp_ring_update_tail(struct ixgbe_ring *ring);
