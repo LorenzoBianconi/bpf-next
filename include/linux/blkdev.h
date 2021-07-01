@@ -25,6 +25,7 @@
 #include <linux/scatterlist.h>
 #include <linux/blkzoned.h>
 #include <linux/pm.h>
+#include <linux/sbitmap.h>
 
 struct module;
 struct scsi_ioctl_command;
@@ -326,8 +327,6 @@ enum blk_bounce {
 };
 
 struct queue_limits {
-	unsigned int		bio_max_bytes;
-
 	enum blk_bounce		bounce;
 	unsigned long		seg_boundary_mask;
 	unsigned long		virt_boundary_mask;
@@ -494,6 +493,9 @@ struct request_queue {
 	struct work_struct	timeout_work;
 
 	atomic_t		nr_active_requests_shared_sbitmap;
+
+	struct sbitmap_queue	sched_bitmap_tags;
+	struct sbitmap_queue	sched_breserved_tags;
 
 	struct list_head	icq_list;
 #ifdef CONFIG_BLK_CGROUP
@@ -677,11 +679,6 @@ bool blk_queue_flag_test_and_set(unsigned int flag, struct request_queue *q);
 
 extern void blk_set_pm_only(struct request_queue *q);
 extern void blk_clear_pm_only(struct request_queue *q);
-
-static inline bool blk_account_rq(struct request *rq)
-{
-	return (rq->rq_flags & RQF_STARTED) && !blk_rq_is_passthrough(rq);
-}
 
 #define list_entry_rq(ptr)	list_entry((ptr), struct request, queuelist)
 
@@ -1216,7 +1213,6 @@ static inline int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 extern void blk_dump_rq_flags(struct request *, char *);
 
 bool __must_check blk_get_queue(struct request_queue *);
-struct request_queue *blk_alloc_queue(int node_id);
 extern void blk_put_queue(struct request_queue *);
 extern void blk_set_queue_dying(struct request_queue *);
 

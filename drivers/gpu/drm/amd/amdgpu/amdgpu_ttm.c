@@ -225,7 +225,7 @@ static int amdgpu_ttm_map_buffer(struct ttm_buffer_object *bo,
 	*addr += mm_cur->start & ~PAGE_MASK;
 
 	num_dw = ALIGN(adev->mman.buffer_funcs->copy_num_dw, 8);
-	num_bytes = num_pages * 8;
+	num_bytes = num_pages * 8 * AMDGPU_GPU_PAGES_IN_CPU_PAGE;
 
 	r = amdgpu_job_alloc_with_ib(adev, num_dw * 4 + num_bytes,
 				     AMDGPU_IB_POOL_DELAYED, &job);
@@ -709,8 +709,8 @@ int amdgpu_ttm_tt_get_user_pages(struct amdgpu_bo *bo, struct page **pages)
 	}
 
 	mmap_read_lock(mm);
-	vma = find_vma(mm, start);
-	if (unlikely(!vma || start < vma->vm_start)) {
+	vma = vma_lookup(mm, start);
+	if (unlikely(!vma)) {
 		r = -EFAULT;
 		goto out_unlock;
 	}
@@ -1210,6 +1210,7 @@ static void amdgpu_ttm_tt_unpopulate(struct ttm_device *bdev,
 	if (gtt && gtt->userptr) {
 		amdgpu_ttm_tt_set_user_pages(ttm, NULL);
 		kfree(ttm->sg);
+		ttm->sg = NULL;
 		ttm->page_flags &= ~TTM_PAGE_FLAG_SG;
 		return;
 	}

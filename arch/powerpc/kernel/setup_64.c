@@ -369,10 +369,10 @@ void __init early_setup(unsigned long dt_ptr)
 	apply_feature_fixups();
 	setup_feature_keys();
 
-	early_ioremap_setup();
-
 	/* Initialize the hash table or TLB handling */
 	early_init_mmu();
+
+	early_ioremap_setup();
 
 	/*
 	 * After firmware and early platform setup code has set things up,
@@ -788,7 +788,7 @@ static void * __init pcpu_alloc_bootmem(unsigned int cpu, size_t size,
 					size_t align)
 {
 	const unsigned long goal = __pa(MAX_DMA_ADDRESS);
-#ifdef CONFIG_NEED_MULTIPLE_NODES
+#ifdef CONFIG_NUMA
 	int node = early_cpu_to_node(cpu);
 	void *ptr;
 

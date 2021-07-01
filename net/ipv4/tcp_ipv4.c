@@ -585,7 +585,7 @@ int tcp_v4_err(struct sk_buff *skb, u32 info)
 		if (!sock_owned_by_user(sk)) {
 			sk->sk_err = err;
 
-			sk->sk_error_report(sk);
+			sk_error_report(sk);
 
 			tcp_done(sk);
 		} else {
@@ -613,7 +613,7 @@ int tcp_v4_err(struct sk_buff *skb, u32 info)
 	inet = inet_sk(sk);
 	if (!sock_owned_by_user(sk) && inet->recverr) {
 		sk->sk_err = err;
-		sk->sk_error_report(sk);
+		sk_error_report(sk);
 	} else	{ /* Only an error on timeout */
 		sk->sk_err_soft = err;
 	}
@@ -2002,13 +2002,21 @@ process:
 			goto csum_error;
 		}
 		if (unlikely(sk->sk_state != TCP_LISTEN)) {
-			inet_csk_reqsk_queue_drop_and_put(sk, req);
-			goto lookup;
+			nsk = reuseport_migrate_sock(sk, req_to_sk(req), skb);
+			if (!nsk) {
+				inet_csk_reqsk_queue_drop_and_put(sk, req);
+				goto lookup;
+			}
+			sk = nsk;
+			/* reuseport_migrate_sock() has already held one sk_refcnt
+			 * before returning.
+			 */
+		} else {
+			/* We own a reference on the listener, increase it again
+			 * as we might lose it too soon.
+			 */
+			sock_hold(sk);
 		}
-		/* We own a reference on the listener, increase it again
-		 * as we might lose it too soon.
-		 */
-		sock_hold(sk);
 		refcounted = true;
 		nsk = NULL;
 		if (!tcp_filter(sk, skb)) {

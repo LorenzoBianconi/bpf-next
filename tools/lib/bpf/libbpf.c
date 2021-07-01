@@ -3266,6 +3266,9 @@ static int add_dummy_ksym_var(struct btf *btf)
 	const struct btf_var_secinfo *vs;
 	const struct btf_type *sec;
 
+	if (!btf)
+		return 0;
+
 	sec_btf_id = btf__find_by_name_kind(btf, KSYMS_SEC,
 					    BTF_KIND_DATASEC);
 	if (sec_btf_id < 0)
@@ -3997,6 +4000,10 @@ bpf_object__probe_loading(struct bpf_object *obj)
 	attr.license = "GPL";
 
 	ret = bpf_load_program_xattr(&attr, NULL, 0);
+	if (ret < 0) {
+		attr.prog_type = BPF_PROG_TYPE_TRACEPOINT;
+		ret = bpf_load_program_xattr(&attr, NULL, 0);
+	}
 	if (ret < 0) {
 		ret = errno;
 		cp = libbpf_strerror_r(ret, errmsg, sizeof(errmsg));
@@ -9075,7 +9082,10 @@ static struct bpf_link *attach_iter(const struct bpf_sec_def *sec,
 
 static const struct bpf_sec_def section_defs[] = {
 	BPF_PROG_SEC("socket",			BPF_PROG_TYPE_SOCKET_FILTER),
-	BPF_PROG_SEC("sk_reuseport",		BPF_PROG_TYPE_SK_REUSEPORT),
+	BPF_EAPROG_SEC("sk_reuseport/migrate",	BPF_PROG_TYPE_SK_REUSEPORT,
+						BPF_SK_REUSEPORT_SELECT_OR_MIGRATE),
+	BPF_EAPROG_SEC("sk_reuseport",		BPF_PROG_TYPE_SK_REUSEPORT,
+						BPF_SK_REUSEPORT_SELECT),
 	SEC_DEF("kprobe/", KPROBE,
 		.attach_fn = attach_kprobe),
 	BPF_PROG_SEC("uprobe/",			BPF_PROG_TYPE_KPROBE),
