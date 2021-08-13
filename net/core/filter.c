@@ -4015,8 +4015,7 @@ BPF_CALL_2(bpf_xdp_adjust_data, struct xdp_buff *, xdp, u32, offset)
 		}
 		base_offset += size;
 	}
-
-	return 0;
+	return base_offset;
 }
 
 static const struct bpf_func_proto bpf_xdp_adjust_data_proto = {

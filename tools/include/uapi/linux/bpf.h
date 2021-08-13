@@ -4865,7 +4865,8 @@ union bpf_attr {
  *		it wants to access; the helper will move *xdp_md*\ **->data**
  *		and *xdp_md *\ **->data_end** so they point to the requested
  *		payload offset and to the end of the fragment containing this
- *		byte offset.
+ *		byte offset, and return the byte offset of the start of the
+ *		fragment.
  *		To move back to the beginning of the packet, simply call the
  *		helper with an offset of '0'.
  *		Note also that the helpers that modify the packet boundaries
@@ -4880,7 +4881,9 @@ union bpf_attr {
  *		performed again, if the helper is used in combination with
  *		direct packet access.
  *	Return
- *		0 on success or a negative error in case of failure.
+ *		offset between the beginning of the current fragment and
+ *		original *xdp_md*\ **->data** on success, or a negative error
+ *		in case of failure.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
