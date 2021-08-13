@@ -16,9 +16,10 @@ int _xdp_adjust_frags(struct xdp_md *xdp)
 	__u8 *data_end = (void *)(long)xdp->data_end;
 	__u8 *data = (void *)(long)xdp->data;
 	__u32 offset = 5000; /* marker offset */
-	int ret = XDP_DROP;
+	int base_offset, ret = XDP_DROP;
 
-	if (bpf_xdp_adjust_data(xdp, offset) < 0)
+	base_offset = bpf_xdp_adjust_data(xdp, offset);
+	if (base_offset < 0 || base_offset > offset)
 		return XDP_DROP;
 
 	data_end = (void *)(long)xdp->data_end;
