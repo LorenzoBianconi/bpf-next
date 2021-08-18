@@ -908,6 +908,20 @@ fmt_str:
 			num_spec++;
 
 			continue;
+		} else if (fmt[i] == 'c') {
+			if (!tmp_buf)
+				goto nocopy_fmt;
+
+			if (tmp_buf_end == tmp_buf) {
+				err = -ENOSPC;
+				goto out;
+			}
+
+			*tmp_buf = raw_args[num_spec];
+			tmp_buf++;
+			num_spec++;
+
+			continue;
 		}
 
 		sizeof_cur_arg = sizeof(int);
@@ -1396,12 +1410,12 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 	case BPF_FUNC_probe_read_user:
 		return &bpf_probe_read_user_proto;
 	case BPF_FUNC_probe_read_kernel:
-		return security_locked_down(LOCKDOWN_BPF_READ) < 0 ?
+		return security_locked_down(LOCKDOWN_BPF_READ_KERNEL) < 0 ?
 		       NULL : &bpf_probe_read_kernel_proto;
 	case BPF_FUNC_probe_read_user_str:
 		return &bpf_probe_read_user_str_proto;
 	case BPF_FUNC_probe_read_kernel_str:
-		return security_locked_down(LOCKDOWN_BPF_READ) < 0 ?
+		return security_locked_down(LOCKDOWN_BPF_READ_KERNEL) < 0 ?
 		       NULL : &bpf_probe_read_kernel_str_proto;
 	case BPF_FUNC_snprintf_btf:
 		return &bpf_snprintf_btf_proto;

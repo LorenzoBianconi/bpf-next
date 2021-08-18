@@ -7,6 +7,7 @@
 #include <linux/vmalloc.h>
 #include <linux/etherdevice.h>
 #include <linux/filter.h>
+#include <linux/rcupdate_trace.h>
 #include <linux/sched/signal.h>
 #include <net/bpf_sk_storage.h>
 #include <net/sock.h>
@@ -115,7 +116,7 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 		if (xdp)
 			*retval = bpf_prog_run_xdp(prog, ctx);
 		else
-			*retval = BPF_PROG_RUN(prog, ctx);
+			*retval = bpf_prog_run(prog, ctx);
 	} while (bpf_test_timer_continue(&t, repeat, &ret, time));
 	bpf_reset_run_ctx(old_ctx);
 	bpf_test_timer_leave(&t);
@@ -326,7 +327,7 @@ __bpf_prog_test_run_raw_tp(void *data)
 	struct bpf_raw_tp_test_run_info *info = data;
 
 	rcu_read_lock();
-	info->retval = BPF_PROG_RUN(info->prog, info->ctx);
+	info->retval = bpf_prog_run(info->prog, info->ctx);
 	rcu_read_unlock();
 }
 
@@ -988,7 +989,7 @@ int bpf_prog_test_run_sk_lookup(struct bpf_prog *prog, const union bpf_attr *kat
 	bpf_test_timer_enter(&t);
 	do {
 		ctx.selected_sk = NULL;
-		retval = BPF_PROG_SK_LOOKUP_RUN_ARRAY(progs, ctx, BPF_PROG_RUN);
+		retval = BPF_PROG_SK_LOOKUP_RUN_ARRAY(progs, ctx, bpf_prog_run);
 	} while (bpf_test_timer_continue(&t, repeat, &ret, &duration));
 	bpf_test_timer_leave(&t);
 
@@ -1044,7 +1045,10 @@ int bpf_prog_test_run_syscall(struct bpf_prog *prog,
 			goto out;
 		}
 	}
+
+	rcu_read_lock_trace();
 	retval = bpf_prog_run_pin_on_cpu(prog, ctx);
+	rcu_read_unlock_trace();
 
 	if (copy_to_user(&uattr->test.retval, &retval, sizeof(u32))) {
 		err = -EFAULT;
