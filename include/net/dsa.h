@@ -155,9 +155,6 @@ struct dsa_switch_tree {
 
 	/* Track the largest switch index within a tree */
 	unsigned int last_switch;
-
-	/* Track the bridges with forwarding offload enabled */
-	unsigned long fwd_offloading_bridges;
 };
 
 #define dsa_lags_foreach_id(_id, _dst)				\
@@ -366,6 +363,9 @@ struct dsa_switch {
 	 */
 	bool			vlan_filtering_is_global;
 
+	/* Keep VLAN filtering enabled on ports not offloading any upper. */
+	bool			needs_standalone_vlan_filtering;
+
 	/* Pass .port_vlan_add and .port_vlan_del to drivers even for bridges
 	 * that have vlan_filtering=0. All drivers should ideally set this (and
 	 * then the option would get removed), but it is unknown whether this
@@ -411,8 +411,9 @@ struct dsa_switch {
 	unsigned int		num_lag_ids;
 
 	/* Drivers that support bridge forwarding offload should set this to
-	 * the maximum number of bridges spanning the same switch tree that can
-	 * be offloaded.
+	 * the maximum number of bridges spanning the same switch tree (or all
+	 * trees, in the case of cross-tree bridging support) that can be
+	 * offloaded.
 	 */
 	unsigned int		num_fwd_offloading_bridges;
 

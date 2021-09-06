@@ -63,7 +63,7 @@ MODULE_PARM_DESC(tx_sgl, "Minimum number of frags when using dma_map_sg() to opt
 
 #define HNS3_SGL_SIZE(nfrag)	(sizeof(struct scatterlist) * (nfrag) +	\
 				 sizeof(struct sg_table))
-#define HNS3_MAX_SGL_SIZE	ALIGN(HNS3_SGL_SIZE(HNS3_MAX_TSO_BD_NUM),\
+#define HNS3_MAX_SGL_SIZE	ALIGN(HNS3_SGL_SIZE(HNS3_MAX_TSO_BD_NUM), \
 				      dma_get_cache_alignment())
 
 #define DEFAULT_MSG_LEVEL (NETIF_MSG_PROBE | NETIF_MSG_LINK | \
@@ -100,7 +100,7 @@ static const struct pci_device_id hns3_pci_tbl[] = {
 	{PCI_VDEVICE(HUAWEI, HNAE3_DEV_ID_RDMA_DCB_PFC_VF),
 	 HNAE3_DEV_SUPPORT_ROCE_DCB_BITS},
 	/* required last entry */
-	{0, }
+	{0,}
 };
 MODULE_DEVICE_TABLE(pci, hns3_pci_tbl);
 
@@ -971,8 +971,7 @@ static u32 hns3_tx_spare_space(struct hns3_enet_ring *ring)
 	/* The free tx buffer is divided into two part, so pick the
 	 * larger one.
 	 */
-	return (ntc > (tx_spare->len - ntu) ? ntc :
-			(tx_spare->len - ntu)) - 1;
+	return max(ntc, tx_spare->len - ntu) - 1;
 }
 
 static void hns3_tx_spare_update(struct hns3_enet_ring *ring)
@@ -3127,11 +3126,6 @@ static void hns3_set_default_feature(struct net_device *netdev)
 
 	netdev->priv_flags |= IFF_UNICAST_FLT;
 
-	netdev->hw_enc_features |= NETIF_F_RXCSUM | NETIF_F_SG | NETIF_F_GSO |
-		NETIF_F_GRO | NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_GSO_GRE |
-		NETIF_F_GSO_GRE_CSUM | NETIF_F_GSO_UDP_TUNNEL |
-		NETIF_F_SCTP_CRC | NETIF_F_TSO_MANGLEID | NETIF_F_FRAGLIST;
-
 	netdev->gso_partial_features |= NETIF_F_GSO_GRE_CSUM;
 
 	netdev->features |= NETIF_F_HW_VLAN_CTAG_FILTER |
@@ -3141,62 +3135,37 @@ static void hns3_set_default_feature(struct net_device *netdev)
 		NETIF_F_GSO_GRE_CSUM | NETIF_F_GSO_UDP_TUNNEL |
 		NETIF_F_SCTP_CRC | NETIF_F_FRAGLIST;
 
-	netdev->vlan_features |= NETIF_F_RXCSUM |
-		NETIF_F_SG | NETIF_F_GSO | NETIF_F_GRO |
-		NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_GSO_GRE |
-		NETIF_F_GSO_GRE_CSUM | NETIF_F_GSO_UDP_TUNNEL |
-		NETIF_F_SCTP_CRC | NETIF_F_FRAGLIST;
-
-	netdev->hw_features |= NETIF_F_HW_VLAN_CTAG_TX |
-		NETIF_F_HW_VLAN_CTAG_RX |
-		NETIF_F_RXCSUM | NETIF_F_SG | NETIF_F_GSO |
-		NETIF_F_GRO | NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_GSO_GRE |
-		NETIF_F_GSO_GRE_CSUM | NETIF_F_GSO_UDP_TUNNEL |
-		NETIF_F_SCTP_CRC | NETIF_F_FRAGLIST;
-
 	if (ae_dev->dev_version >= HNAE3_DEVICE_VERSION_V2) {
-		netdev->hw_features |= NETIF_F_GRO_HW;
 		netdev->features |= NETIF_F_GRO_HW;
 
-		if (!(h->flags & HNAE3_SUPPORT_VF)) {
-			netdev->hw_features |= NETIF_F_NTUPLE;
+		if (!(h->flags & HNAE3_SUPPORT_VF))
 			netdev->features |= NETIF_F_NTUPLE;
-		}
 	}
 
-	if (test_bit(HNAE3_DEV_SUPPORT_UDP_GSO_B, ae_dev->caps)) {
-		netdev->hw_features |= NETIF_F_GSO_UDP_L4;
+	if (test_bit(HNAE3_DEV_SUPPORT_UDP_GSO_B, ae_dev->caps))
 		netdev->features |= NETIF_F_GSO_UDP_L4;
-		netdev->vlan_features |= NETIF_F_GSO_UDP_L4;
-		netdev->hw_enc_features |= NETIF_F_GSO_UDP_L4;
-	}
 
-	if (test_bit(HNAE3_DEV_SUPPORT_HW_TX_CSUM_B, ae_dev->caps)) {
-		netdev->hw_features |= NETIF_F_HW_CSUM;
+	if (test_bit(HNAE3_DEV_SUPPORT_HW_TX_CSUM_B, ae_dev->caps))
 		netdev->features |= NETIF_F_HW_CSUM;
-		netdev->vlan_features |= NETIF_F_HW_CSUM;
-		netdev->hw_enc_features |= NETIF_F_HW_CSUM;
-	} else {
-		netdev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
+	else
 		netdev->features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
-		netdev->vlan_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
-		netdev->hw_enc_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
-	}
 
-	if (test_bit(HNAE3_DEV_SUPPORT_UDP_TUNNEL_CSUM_B, ae_dev->caps)) {
-		netdev->hw_features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
+	if (test_bit(HNAE3_DEV_SUPPORT_UDP_TUNNEL_CSUM_B, ae_dev->caps))
 		netdev->features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
-		netdev->vlan_features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
-		netdev->hw_enc_features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
-	}
 
-	if (test_bit(HNAE3_DEV_SUPPORT_FD_FORWARD_TC_B, ae_dev->caps)) {
-		netdev->hw_features |= NETIF_F_HW_TC;
+	if (test_bit(HNAE3_DEV_SUPPORT_FD_FORWARD_TC_B, ae_dev->caps))
 		netdev->features |= NETIF_F_HW_TC;
-	}
 
-	if (test_bit(HNAE3_DEV_SUPPORT_VLAN_FLTR_MDF_B, ae_dev->caps))
-		netdev->hw_features |= NETIF_F_HW_VLAN_CTAG_FILTER;
+	netdev->hw_features |= netdev->features;
+	if (!test_bit(HNAE3_DEV_SUPPORT_VLAN_FLTR_MDF_B, ae_dev->caps))
+		netdev->hw_features &= ~NETIF_F_HW_VLAN_CTAG_FILTER;
+
+	netdev->vlan_features |= netdev->features &
+		~(NETIF_F_HW_VLAN_CTAG_FILTER | NETIF_F_HW_VLAN_CTAG_TX |
+		  NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_GRO_HW | NETIF_F_NTUPLE |
+		  NETIF_F_HW_TC);
+
+	netdev->hw_enc_features |= netdev->vlan_features | NETIF_F_TSO_MANGLEID;
 }
 
 static int hns3_alloc_buffer(struct hns3_enet_ring *ring,
@@ -4473,9 +4442,7 @@ static void hns3_tx_dim_work(struct work_struct *work)
 static void hns3_nic_init_dim(struct hns3_enet_tqp_vector *tqp_vector)
 {
 	INIT_WORK(&tqp_vector->rx_group.dim.work, hns3_rx_dim_work);
-	tqp_vector->rx_group.dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
 	INIT_WORK(&tqp_vector->tx_group.dim.work, hns3_tx_dim_work);
-	tqp_vector->tx_group.dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
 }
 
 static int hns3_nic_init_vector_data(struct hns3_nic_priv *priv)
@@ -5023,6 +4990,66 @@ static void hns3_info_show(struct hns3_nic_priv *priv)
 	dev_info(priv->dev, "Max mtu size: %u\n", priv->netdev->max_mtu);
 }
 
+static void hns3_set_cq_period_mode(struct hns3_nic_priv *priv,
+				    enum dim_cq_period_mode mode, bool is_tx)
+{
+	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(priv->ae_handle->pdev);
+	struct hnae3_handle *handle = priv->ae_handle;
+	int i;
+
+	if (is_tx) {
+		priv->tx_cqe_mode = mode;
+
+		for (i = 0; i < priv->vector_num; i++)
+			priv->tqp_vector[i].tx_group.dim.mode = mode;
+	} else {
+		priv->rx_cqe_mode = mode;
+
+		for (i = 0; i < priv->vector_num; i++)
+			priv->tqp_vector[i].rx_group.dim.mode = mode;
+	}
+
+	/* only device version above V3(include V3), GL can switch CQ/EQ
+	 * period mode.
+	 */
+	if (ae_dev->dev_version >= HNAE3_DEVICE_VERSION_V3) {
+		u32 new_mode;
+		u64 reg;
+
+		new_mode = (mode == DIM_CQ_PERIOD_MODE_START_FROM_CQE) ?
+			HNS3_CQ_MODE_CQE : HNS3_CQ_MODE_EQE;
+		reg = is_tx ? HNS3_GL1_CQ_MODE_REG : HNS3_GL0_CQ_MODE_REG;
+
+		writel(new_mode, handle->kinfo.io_base + reg);
+	}
+}
+
+void hns3_cq_period_mode_init(struct hns3_nic_priv *priv,
+			      enum dim_cq_period_mode tx_mode,
+			      enum dim_cq_period_mode rx_mode)
+{
+	hns3_set_cq_period_mode(priv, tx_mode, true);
+	hns3_set_cq_period_mode(priv, rx_mode, false);
+}
+
+static void hns3_state_init(struct hnae3_handle *handle)
+{
+	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(handle->pdev);
+	struct net_device *netdev = handle->kinfo.netdev;
+	struct hns3_nic_priv *priv = netdev_priv(netdev);
+
+	set_bit(HNS3_NIC_STATE_INITED, &priv->state);
+
+	if (ae_dev->dev_version >= HNAE3_DEVICE_VERSION_V3)
+		set_bit(HNAE3_PFLAG_LIMIT_PROMISC, &handle->supported_pflags);
+
+	if (test_bit(HNAE3_DEV_SUPPORT_HW_TX_CSUM_B, ae_dev->caps))
+		set_bit(HNS3_NIC_STATE_HW_TX_CSUM_ENABLE, &priv->state);
+
+	if (hnae3_ae_dev_rxd_adv_layout_supported(ae_dev))
+		set_bit(HNS3_NIC_STATE_RXD_ADV_LAYOUT_ENABLE, &priv->state);
+}
+
 static int hns3_client_init(struct hnae3_handle *handle)
 {
 	struct pci_dev *pdev = handle->pdev;
@@ -5090,6 +5117,9 @@ static int hns3_client_init(struct hnae3_handle *handle)
 		goto out_init_ring;
 	}
 
+	hns3_cq_period_mode_init(priv, DIM_CQ_PERIOD_MODE_START_FROM_EQE,
+				 DIM_CQ_PERIOD_MODE_START_FROM_EQE);
+
 	ret = hns3_init_phy(netdev);
 	if (ret)
 		goto out_init_phy;
@@ -5123,16 +5153,7 @@ static int hns3_client_init(struct hnae3_handle *handle)
 
 	netdev->max_mtu = HNS3_MAX_MTU(ae_dev->dev_specs.max_frm_size);
 
-	if (test_bit(HNAE3_DEV_SUPPORT_HW_TX_CSUM_B, ae_dev->caps))
-		set_bit(HNS3_NIC_STATE_HW_TX_CSUM_ENABLE, &priv->state);
-
-	if (hnae3_ae_dev_rxd_adv_layout_supported(ae_dev))
-		set_bit(HNS3_NIC_STATE_RXD_ADV_LAYOUT_ENABLE, &priv->state);
-
-	set_bit(HNS3_NIC_STATE_INITED, &priv->state);
-
-	if (ae_dev->dev_version >= HNAE3_DEVICE_VERSION_V3)
-		set_bit(HNAE3_PFLAG_LIMIT_PROMISC, &handle->supported_pflags);
+	hns3_state_init(handle);
 
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -5421,6 +5442,8 @@ static int hns3_reset_notify_init_enet(struct hnae3_handle *handle)
 	ret = hns3_init_all_ring(priv);
 	if (ret)
 		goto err_uninit_vector;
+
+	hns3_cq_period_mode_init(priv, priv->tx_cqe_mode, priv->rx_cqe_mode);
 
 	/* the device can work without cpu rmap, only aRFS needs it */
 	ret = hns3_set_rx_cpu_rmap(netdev);

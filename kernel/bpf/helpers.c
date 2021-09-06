@@ -363,9 +363,15 @@ const struct bpf_func_proto bpf_jiffies64_proto = {
 #ifdef CONFIG_CGROUPS
 BPF_CALL_0(bpf_get_current_cgroup_id)
 {
-	struct cgroup *cgrp = task_dfl_cgroup(current);
+	struct cgroup *cgrp;
+	u64 cgrp_id;
 
-	return cgroup_id(cgrp);
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
+	cgrp_id = cgroup_id(cgrp);
+	rcu_read_unlock();
+
+	return cgrp_id;
 }
 
 const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
@@ -376,13 +382,17 @@ const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
 
 BPF_CALL_1(bpf_get_current_ancestor_cgroup_id, int, ancestor_level)
 {
-	struct cgroup *cgrp = task_dfl_cgroup(current);
+	struct cgroup *cgrp;
 	struct cgroup *ancestor;
+	u64 cgrp_id;
 
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
 	ancestor = cgroup_ancestor(cgrp, ancestor_level);
-	if (!ancestor)
-		return 0;
-	return cgroup_id(ancestor);
+	cgrp_id = ancestor ? cgroup_id(ancestor) : 0;
+	rcu_read_unlock();
+
+	return cgrp_id;
 }
 
 const struct bpf_func_proto bpf_get_current_ancestor_cgroup_id_proto = {
@@ -1322,10 +1332,12 @@ out:
 }
 
 const struct bpf_func_proto bpf_get_current_task_proto __weak;
+const struct bpf_func_proto bpf_get_current_task_btf_proto __weak;
 const struct bpf_func_proto bpf_probe_read_user_proto __weak;
 const struct bpf_func_proto bpf_probe_read_user_str_proto __weak;
 const struct bpf_func_proto bpf_probe_read_kernel_proto __weak;
 const struct bpf_func_proto bpf_probe_read_kernel_str_proto __weak;
+const struct bpf_func_proto bpf_task_pt_regs_proto __weak;
 
 const struct bpf_func_proto *
 bpf_base_func_proto(enum bpf_func_id func_id)
@@ -1407,6 +1419,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return bpf_get_trace_printk_proto();
 	case BPF_FUNC_get_current_task:
 		return &bpf_get_current_task_proto;
+	case BPF_FUNC_get_current_task_btf:
+		return &bpf_get_current_task_btf_proto;
 	case BPF_FUNC_probe_read_user:
 		return &bpf_probe_read_user_proto;
 	case BPF_FUNC_probe_read_kernel:
@@ -1421,6 +1435,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_snprintf_btf_proto;
 	case BPF_FUNC_snprintf:
 		return &bpf_snprintf_proto;
+	case BPF_FUNC_task_pt_regs:
+		return &bpf_task_pt_regs_proto;
 	default:
 		return NULL;
 	}

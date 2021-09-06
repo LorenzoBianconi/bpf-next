@@ -7,9 +7,9 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/delay.h>
+#include <linux/pm_runtime.h>
 
 #include "ipa.h"
-#include "ipa_clock.h"
 #include "ipa_uc.h"
 
 /**
@@ -147,15 +147,16 @@ static void ipa_uc_response_hdlr(struct ipa *ipa, enum ipa_irq_id irq_id)
 	 * should only receive responses from the microcontroller when it has
 	 * sent it a request message.
 	 *
-	 * We can drop the clock reference taken in ipa_uc_clock() once we
+	 * We can drop the power reference taken in ipa_uc_power() once we
 	 * know the microcontroller has finished its initialization.
 	 */
 	switch (shared->response) {
 	case IPA_UC_RESPONSE_INIT_COMPLETED:
-		if (ipa->uc_clocked) {
+		if (ipa->uc_powered) {
 			ipa->uc_loaded = true;
-			(void)ipa_clock_put(ipa);
-			ipa->uc_clocked = false;
+			pm_runtime_mark_last_busy(dev);
+			(void)pm_runtime_put_autosuspend(dev);
+			ipa->uc_powered = false;
 		} else {
 			dev_warn(dev, "unexpected init_completed response\n");
 		}
@@ -170,7 +171,7 @@ static void ipa_uc_response_hdlr(struct ipa *ipa, enum ipa_irq_id irq_id)
 /* Configure the IPA microcontroller subsystem */
 void ipa_uc_config(struct ipa *ipa)
 {
-	ipa->uc_clocked = false;
+	ipa->uc_powered = false;
 	ipa->uc_loaded = false;
 	ipa_interrupt_add(ipa->interrupt, IPA_IRQ_UC_0, ipa_uc_event_handler);
 	ipa_interrupt_add(ipa->interrupt, IPA_IRQ_UC_1, ipa_uc_response_hdlr);
@@ -179,28 +180,37 @@ void ipa_uc_config(struct ipa *ipa)
 /* Inverse of ipa_uc_config() */
 void ipa_uc_deconfig(struct ipa *ipa)
 {
+	struct device *dev = &ipa->pdev->dev;
+
 	ipa_interrupt_remove(ipa->interrupt, IPA_IRQ_UC_1);
 	ipa_interrupt_remove(ipa->interrupt, IPA_IRQ_UC_0);
-	if (ipa->uc_clocked)
-		(void)ipa_clock_put(ipa);
+	if (!ipa->uc_powered)
+		return;
+
+	pm_runtime_mark_last_busy(dev);
+	(void)pm_runtime_put_autosuspend(dev);
 }
 
-/* Take a proxy clock reference for the microcontroller */
-void ipa_uc_clock(struct ipa *ipa)
+/* Take a proxy power reference for the microcontroller */
+void ipa_uc_power(struct ipa *ipa)
 {
 	static bool already;
+	struct device *dev;
 	int ret;
 
 	if (already)
 		return;
 	already = true;		/* Only do this on first boot */
 
-	/* This clock reference dropped in ipa_uc_response_hdlr() above */
-	ret = ipa_clock_get(ipa);
-	if (WARN(ret < 0, "error %d getting proxy clock\n", ret))
-		(void)ipa_clock_put(ipa);
-
-	ipa->uc_clocked = ret >= 0;
+	/* This power reference dropped in ipa_uc_response_hdlr() above */
+	dev = &ipa->pdev->dev;
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
+		dev_err(dev, "error %d getting proxy power\n", ret);
+	} else {
+		ipa->uc_powered = true;
+	}
 }
 
 /* Send a command to the microcontroller */

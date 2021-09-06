@@ -270,27 +270,9 @@ static void dsa_port_switchdev_unsync_attrs(struct dsa_port *dp)
 	 */
 }
 
-static int dsa_tree_find_bridge_num(struct dsa_switch_tree *dst,
-				    struct net_device *bridge_dev)
-{
-	struct dsa_port *dp;
-
-	/* When preparing the offload for a port, it will have a valid
-	 * dp->bridge_dev pointer but a not yet valid dp->bridge_num.
-	 * However there might be other ports having the same dp->bridge_dev
-	 * and a valid dp->bridge_num, so just ignore this port.
-	 */
-	list_for_each_entry(dp, &dst->ports, list)
-		if (dp->bridge_dev == bridge_dev && dp->bridge_num != -1)
-			return dp->bridge_num;
-
-	return -1;
-}
-
 static void dsa_port_bridge_tx_fwd_unoffload(struct dsa_port *dp,
 					     struct net_device *bridge_dev)
 {
-	struct dsa_switch_tree *dst = dp->ds->dst;
 	int bridge_num = dp->bridge_num;
 	struct dsa_switch *ds = dp->ds;
 
@@ -300,11 +282,7 @@ static void dsa_port_bridge_tx_fwd_unoffload(struct dsa_port *dp,
 
 	dp->bridge_num = -1;
 
-	/* Check if the bridge is still in use, otherwise it is time
-	 * to clean it up so we can reuse this bridge_num later.
-	 */
-	if (!dsa_tree_find_bridge_num(dst, bridge_dev))
-		clear_bit(bridge_num, &dst->fwd_offloading_bridges);
+	dsa_bridge_num_put(bridge_dev, bridge_num);
 
 	/* Notify the chips only once the offload has been deactivated, so
 	 * that they can update their configuration accordingly.
@@ -316,23 +294,16 @@ static void dsa_port_bridge_tx_fwd_unoffload(struct dsa_port *dp,
 static bool dsa_port_bridge_tx_fwd_offload(struct dsa_port *dp,
 					   struct net_device *bridge_dev)
 {
-	struct dsa_switch_tree *dst = dp->ds->dst;
 	struct dsa_switch *ds = dp->ds;
 	int bridge_num, err;
 
 	if (!ds->ops->port_bridge_tx_fwd_offload)
 		return false;
 
-	bridge_num = dsa_tree_find_bridge_num(dst, bridge_dev);
-	if (bridge_num < 0) {
-		/* First port that offloads TX forwarding for this bridge */
-		bridge_num = find_first_zero_bit(&dst->fwd_offloading_bridges,
-						 DSA_MAX_NUM_OFFLOADING_BRIDGES);
-		if (bridge_num >= ds->num_fwd_offloading_bridges)
-			return false;
-
-		set_bit(bridge_num, &dst->fwd_offloading_bridges);
-	}
+	bridge_num = dsa_bridge_num_get(bridge_dev,
+					ds->num_fwd_offloading_bridges);
+	if (bridge_num < 0)
+		return false;
 
 	dp->bridge_num = bridge_num;
 
@@ -401,6 +372,10 @@ out_rollback:
 void dsa_port_pre_bridge_leave(struct dsa_port *dp, struct net_device *br)
 {
 	struct net_device *brport_dev = dsa_port_to_bridge_port(dp);
+
+	/* Don't try to unoffload something that is not offloaded */
+	if (!brport_dev)
+		return;
 
 	switchdev_bridge_port_unoffload(brport_dev, dp,
 					&dsa_slave_switchdev_notifier,
@@ -605,6 +580,7 @@ static bool dsa_port_can_apply_vlan_filtering(struct dsa_port *dp,
 int dsa_port_vlan_filtering(struct dsa_port *dp, bool vlan_filtering,
 			    struct netlink_ext_ack *extack)
 {
+	bool old_vlan_filtering = dsa_port_is_vlan_filtering(dp);
 	struct dsa_switch *ds = dp->ds;
 	bool apply;
 	int err;
@@ -630,12 +606,49 @@ int dsa_port_vlan_filtering(struct dsa_port *dp, bool vlan_filtering,
 	if (err)
 		return err;
 
-	if (ds->vlan_filtering_is_global)
+	if (ds->vlan_filtering_is_global) {
+		int port;
+
 		ds->vlan_filtering = vlan_filtering;
-	else
+
+		for (port = 0; port < ds->num_ports; port++) {
+			struct net_device *slave;
+
+			if (!dsa_is_user_port(ds, port))
+				continue;
+
+			/* We might be called in the unbind path, so not
+			 * all slave devices might still be registered.
+			 */
+			slave = dsa_to_port(ds, port)->slave;
+			if (!slave)
+				continue;
+
+			err = dsa_slave_manage_vlan_filtering(slave,
+							      vlan_filtering);
+			if (err)
+				goto restore;
+		}
+	} else {
 		dp->vlan_filtering = vlan_filtering;
 
+		err = dsa_slave_manage_vlan_filtering(dp->slave,
+						      vlan_filtering);
+		if (err)
+			goto restore;
+	}
+
 	return 0;
+
+restore:
+	ds->ops->port_vlan_filtering(ds, dp->index, old_vlan_filtering, NULL);
+
+	if (ds->vlan_filtering_is_global)
+		ds->vlan_filtering = old_vlan_filtering;
+	else
+		dp->vlan_filtering = old_vlan_filtering;
+
+	return err;
 }
 
 /* This enforces legacy behavior for switch drivers which assume they can't

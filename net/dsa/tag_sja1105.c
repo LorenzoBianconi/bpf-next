@@ -116,9 +116,14 @@ static inline bool sja1105_is_meta_frame(const struct sk_buff *skb)
 }
 
 /* Calls sja1105_port_deferred_xmit in sja1105_main.c */
-static struct sk_buff *sja1105_defer_xmit(struct sja1105_port *sp,
+static struct sk_buff *sja1105_defer_xmit(struct dsa_port *dp,
 					  struct sk_buff *skb)
 {
+	struct sja1105_port *sp = dp->priv;
+
+	if (!dsa_port_is_sja1105(dp))
+		return skb;
+
 	/* Increase refcount so the kfree_skb in dsa_slave_xmit
 	 * won't really free the packet.
 	 */
@@ -128,9 +133,44 @@ static struct sk_buff *sja1105_defer_xmit(struct sja1105_port *sp,
 	return NULL;
 }
 
-static u16 sja1105_xmit_tpid(struct sja1105_port *sp)
+/* Send VLAN tags with a TPID that blends in with whatever VLAN protocol a
+ * bridge spanning ports of this switch might have.
+ */
+static u16 sja1105_xmit_tpid(struct dsa_port *dp)
 {
-	return sp->xmit_tpid;
+	struct dsa_switch *ds = dp->ds;
+	struct dsa_port *other_dp;
+	u16 proto;
+
+	/* Since VLAN awareness is global, then if this port is VLAN-unaware,
+	 * all ports are. Use the VLAN-unaware TPID used for tag_8021q.
+	 */
+	if (!dsa_port_is_vlan_filtering(dp))
+		return ETH_P_SJA1105;
+
+	/* Port is VLAN-aware, so there is a bridge somewhere (a single one,
+	 * we're sure about that). It may not be on this port though, so we
+	 * need to find it.
+	 */
+	list_for_each_entry(other_dp, &ds->dst->ports, list) {
+		if (other_dp->ds != ds)
+			continue;
+
+		if (!other_dp->bridge_dev)
+			continue;
+
+		/* Error is returned only if CONFIG_BRIDGE_VLAN_FILTERING,
+		 * which seems pointless to handle, as our port cannot become
+		 * VLAN-aware in that case.
+		 */
+		br_vlan_get_proto(other_dp->bridge_dev, &proto);
+
+		return proto;
+	}
+
+	WARN_ONCE(1, "Port is VLAN-aware but cannot find associated bridge!\n");
+
+	return ETH_P_SJA1105;
 }
 
 static struct sk_buff *sja1105_imprecise_xmit(struct sk_buff *skb,
@@ -155,7 +195,37 @@ static struct sk_buff *sja1105_imprecise_xmit(struct sk_buff *skb,
 	 */
 	tx_vid = dsa_8021q_bridge_tx_fwd_offload_vid(dp->bridge_num);
 
-	return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp->priv), tx_vid);
+	return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp), tx_vid);
+}
+
+/* Transform untagged control packets into pvid-tagged control packets so that
+ * all packets sent by this tagger are VLAN-tagged and we can configure the
+ * switch to drop untagged packets coming from the DSA master.
+ */
+static struct sk_buff *sja1105_pvid_tag_control_pkt(struct dsa_port *dp,
+						    struct sk_buff *skb, u8 pcp)
+{
+	__be16 xmit_tpid = htons(sja1105_xmit_tpid(dp));
+	struct vlan_ethhdr *hdr;
+
+	/* If VLAN tag is in hwaccel area, move it to the payload
+	 * to deal with both cases uniformly and to ensure that
+	 * the VLANs are added in the right order.
+	 */
+	if (unlikely(skb_vlan_tag_present(skb))) {
+		skb = __vlan_hwaccel_push_inside(skb);
+		if (!skb)
+			return NULL;
+	}
+
+	hdr = (struct vlan_ethhdr *)skb_mac_header(skb);
+
+	/* If skb is already VLAN-tagged, leave that VLAN ID in place */
+	if (hdr->h_vlan_proto == xmit_tpid)
+		return skb;
+
+	return vlan_insert_tag(skb, xmit_tpid, (pcp << VLAN_PRIO_SHIFT) |
+			       SJA1105_DEFAULT_VLAN);
 }
 
 static struct sk_buff *sja1105_xmit(struct sk_buff *skb,
@@ -173,10 +243,15 @@ static struct sk_buff *sja1105_xmit(struct sk_buff *skb,
 	 * but instead SPI-installed management routes. Part 2 of this
 	 * is the .port_deferred_xmit driver callback.
 	 */
-	if (unlikely(sja1105_is_link_local(skb)))
-		return sja1105_defer_xmit(dp->priv, skb);
+	if (unlikely(sja1105_is_link_local(skb))) {
+		skb = sja1105_pvid_tag_control_pkt(dp, skb, pcp);
+		if (!skb)
+			return NULL;
 
-	return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp->priv),
+		return sja1105_defer_xmit(dp, skb);
+	}
+
+	return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp),
 			     ((pcp << VLAN_PRIO_SHIFT) | tx_vid));
 }
 
@@ -200,8 +275,12 @@ static struct sk_buff *sja1110_xmit(struct sk_buff *skb,
 	 * tag_8021q TX VLANs.
 	 */
 	if (likely(!sja1105_is_link_local(skb)))
-		return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp->priv),
+		return dsa_8021q_xmit(skb, netdev, sja1105_xmit_tpid(dp),
 				     ((pcp << VLAN_PRIO_SHIFT) | tx_vid));
+
+	skb = sja1105_pvid_tag_control_pkt(dp, skb, pcp);
+	if (!skb)
+		return NULL;
 
 	skb_push(skb, SJA1110_HEADER_LEN);
 
@@ -265,16 +344,16 @@ static struct sk_buff
 				bool is_link_local,
 				bool is_meta)
 {
-	struct sja1105_port *sp;
-	struct dsa_port *dp;
-
-	dp = dsa_slave_to_port(skb->dev);
-	sp = dp->priv;
-
 	/* Step 1: A timestampable frame was received.
 	 * Buffer it until we get its meta frame.
 	 */
 	if (is_link_local) {
+		struct dsa_port *dp = dsa_slave_to_port(skb->dev);
+		struct sja1105_port *sp = dp->priv;
+
+		if (unlikely(!dsa_port_is_sja1105(dp)))
+			return skb;
+
 		if (!test_bit(SJA1105_HWTS_RX_EN, &sp->data->state))
 			/* Do normal processing. */
 			return skb;
@@ -307,7 +386,12 @@ static struct sk_buff
 	 * frame, which serves no further purpose).
 	 */
 	} else if (is_meta) {
+		struct dsa_port *dp = dsa_slave_to_port(skb->dev);
+		struct sja1105_port *sp = dp->priv;
 		struct sk_buff *stampable_skb;
+
+		if (unlikely(!dsa_port_is_sja1105(dp)))
+			return skb;
 
 		/* Drop the meta frame if we're not in the right state
 		 * to process it.

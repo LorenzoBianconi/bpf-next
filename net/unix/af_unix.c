@@ -495,7 +495,7 @@ static void unix_dgram_disconnected(struct sock *sk, struct sock *other)
 			sk_error_report(other);
 		}
 	}
-	sk->sk_state = other->sk_state = TCP_CLOSE;
+	other->sk_state = TCP_CLOSE;
 }
 
 static void unix_sock_destructor(struct sock *sk)
@@ -1222,6 +1222,7 @@ restart:
 		if (err)
 			goto out_unlock;
 
+		sk->sk_state = other->sk_state = TCP_ESTABLISHED;
 	} else {
 		/*
 		 *	1003.1g breaking connected state with AF_UNSPEC
@@ -1235,7 +1236,10 @@ restart:
 	 */
 	if (unix_peer(sk)) {
 		struct sock *old_peer = unix_peer(sk);
+
 		unix_peer(sk) = other;
+		if (!other)
+			sk->sk_state = TCP_CLOSE;
 		unix_dgram_peer_wake_disconnect_wakeup(sk, old_peer);
 
 		unix_state_double_unlock(sk, other);
@@ -1248,8 +1252,6 @@ restart:
 		unix_state_double_unlock(sk, other);
 	}
 
-	if (unix_peer(sk))
-		sk->sk_state = other->sk_state = TCP_ESTABLISHED;
 	return 0;
 
 out_unlock:
@@ -1831,6 +1833,7 @@ restart_locked:
 
 			unix_state_unlock(sk);
 
+			sk->sk_state = TCP_CLOSE;
 			unix_dgram_disconnected(sk, other);
 			sock_put(other);
 			err = -ECONNREFUSED;
@@ -1934,7 +1937,6 @@ static int queue_oob(struct socket *sock, struct msghdr *msg, struct sock *other
 		return err;
 
 	skb_put(skb, 1);
-	skb->len = 1;
 	err = skb_copy_datagram_from_iter(skb, 0, &msg->msg_iter, 1);
 
 	if (err) {
@@ -1943,11 +1945,19 @@ static int queue_oob(struct socket *sock, struct msghdr *msg, struct sock *other
 	}
 
 	unix_state_lock(other);
+
+	if (sock_flag(other, SOCK_DEAD) ||
+	    (other->sk_shutdown & RCV_SHUTDOWN)) {
+		unix_state_unlock(other);
+		kfree_skb(skb);
+		return -EPIPE;
+	}
+
 	maybe_add_creds(skb, sock, other);
 	skb_get(skb);
 
 	if (ousk->oob_skb)
-		kfree_skb(ousk->oob_skb);
+		consume_skb(ousk->oob_skb);
 
 	ousk->oob_skb = skb;
 
@@ -2847,7 +2857,8 @@ static int unix_shutdown(struct socket *sock, int mode)
 		int peer_mode = 0;
 		const struct proto *prot = READ_ONCE(other->sk_prot);
 
-		prot->unhash(other);
+		if (prot->unhash)
+			prot->unhash(other);
 		if (mode&RCV_SHUTDOWN)
 			peer_mode |= SEND_SHUTDOWN;
 		if (mode&SEND_SHUTDOWN)

@@ -142,7 +142,7 @@ static const struct fec_devinfo fec_imx8mq_info = {
 		  FEC_QUIRK_ERR007885 | FEC_QUIRK_BUG_CAPTURE |
 		  FEC_QUIRK_HAS_RACC | FEC_QUIRK_HAS_COALESCE |
 		  FEC_QUIRK_CLEAR_SETUP_MII | FEC_QUIRK_HAS_MULTI_QUEUES |
-		  FEC_QUIRK_HAS_EEE,
+		  FEC_QUIRK_HAS_EEE | FEC_QUIRK_WAKEUP_FROM_INT2,
 };
 
 static const struct fec_devinfo fec_imx8qm_info = {
@@ -2654,8 +2654,10 @@ static void fec_enet_itr_coal_set(struct net_device *ndev)
 	}
 }
 
-static int
-fec_enet_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *ec)
+static int fec_enet_get_coalesce(struct net_device *ndev,
+				 struct ethtool_coalesce *ec,
+				 struct kernel_ethtool_coalesce *kernel_coal,
+				 struct netlink_ext_ack *extack)
 {
 	struct fec_enet_private *fep = netdev_priv(ndev);
 
@@ -2671,8 +2673,10 @@ fec_enet_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *ec)
 	return 0;
 }
 
-static int
-fec_enet_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *ec)
+static int fec_enet_set_coalesce(struct net_device *ndev,
+				 struct ethtool_coalesce *ec,
+				 struct kernel_ethtool_coalesce *kernel_coal,
+				 struct netlink_ext_ack *extack)
 {
 	struct fec_enet_private *fep = netdev_priv(ndev);
 	struct device *dev = &fep->pdev->dev;
@@ -2724,7 +2728,7 @@ static void fec_enet_itr_coal_init(struct net_device *ndev)
 	ec.tx_coalesce_usecs = FEC_ITR_ICTT_DEFAULT;
 	ec.tx_max_coalesced_frames = FEC_ITR_ICFT_DEFAULT;
 
-	fec_enet_set_coalesce(ndev, &ec);
+	fec_enet_set_coalesce(ndev, &ec, NULL, NULL);
 }
 
 static int fec_enet_get_tunable(struct net_device *netdev,
@@ -2878,12 +2882,12 @@ fec_enet_set_wol(struct net_device *ndev, struct ethtool_wolinfo *wol)
 	device_set_wakeup_enable(&ndev->dev, wol->wolopts & WAKE_MAGIC);
 	if (device_may_wakeup(&ndev->dev)) {
 		fep->wol_flag |= FEC_WOL_FLAG_ENABLE;
-		if (fep->irq[0] > 0)
-			enable_irq_wake(fep->irq[0]);
+		if (fep->wake_irq > 0)
+			enable_irq_wake(fep->wake_irq);
 	} else {
 		fep->wol_flag &= (~FEC_WOL_FLAG_ENABLE);
-		if (fep->irq[0] > 0)
-			disable_irq_wake(fep->irq[0]);
+		if (fep->wake_irq > 0)
+			disable_irq_wake(fep->wake_irq);
 	}
 
 	return 0;
@@ -3696,6 +3700,17 @@ static int fec_enet_get_irq_cnt(struct platform_device *pdev)
 	return irq_cnt;
 }
 
+static void fec_enet_get_wakeup_irq(struct platform_device *pdev)
+{
+	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct fec_enet_private *fep = netdev_priv(ndev);
+
+	if (fep->quirks & FEC_QUIRK_WAKEUP_FROM_INT2)
+		fep->wake_irq = fep->irq[2];
+	else
+		fep->wake_irq = fep->irq[0];
+}
+
 static int fec_enet_init_stop_mode(struct fec_enet_private *fep,
 				   struct device_node *np)
 {
@@ -3934,6 +3949,9 @@ fec_probe(struct platform_device *pdev)
 
 		fep->irq[i] = irq;
 	}
+
+	/* Decide which interrupt line is wakeup capable */
+	fec_enet_get_wakeup_irq(pdev);
 
 	ret = fec_enet_mii_init(pdev);
 	if (ret)

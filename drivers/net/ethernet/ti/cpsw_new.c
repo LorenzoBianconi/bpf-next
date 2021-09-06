@@ -502,7 +502,7 @@ static void cpsw_restore(struct cpsw_priv *priv)
 
 static void cpsw_init_stp_ale_entry(struct cpsw_common *cpsw)
 {
-	char stpa[] = {0x01, 0x80, 0xc2, 0x0, 0x0, 0x0};
+	static const char stpa[] = {0x01, 0x80, 0xc2, 0x0, 0x0, 0x0};
 
 	cpsw_ale_add_mcast(cpsw->ale, stpa,
 			   ALE_PORT_HOST, ALE_SUPER, 0,
@@ -894,7 +894,7 @@ static int cpsw_ndo_open(struct net_device *ndev)
 		struct ethtool_coalesce coal;
 
 		coal.rx_coalesce_usecs = cpsw->coal_intvl;
-		cpsw_set_coalesce(ndev, &coal);
+		cpsw_set_coalesce(ndev, &coal, NULL, NULL);
 	}
 
 	cpdma_ctlr_start(cpsw->dma);

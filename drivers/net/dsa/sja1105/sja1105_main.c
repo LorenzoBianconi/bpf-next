@@ -26,9 +26,6 @@
 #include "sja1105_tas.h"
 
 #define SJA1105_UNKNOWN_MULTICAST	0x010000000000ull
-#define SJA1105_DEFAULT_VLAN		(VLAN_N_VID - 1)
-
-static const struct dsa_switch_ops sja1105_switch_ops;
 
 static void sja1105_hw_reset(struct gpio_desc *gpio, unsigned int pulse_len,
 			     unsigned int startup_delay)
@@ -122,11 +119,23 @@ static int sja1105_commit_pvid(struct dsa_switch *ds, int port)
 	if (rc)
 		return rc;
 
-	vlan = priv->static_config.tables[BLK_IDX_VLAN_LOOKUP].entries;
+	/* Only force dropping of untagged packets when the port is under a
+	 * VLAN-aware bridge. When the tag_8021q pvid is used, we are
+	 * deliberately removing the RX VLAN from the port's VMEMB_PORT list,
+	 * to prevent DSA tag spoofing from the link partner. Untagged packets
+	 * are the only ones that should be received with tag_8021q, so
+	 * definitely don't drop them.
+	 */
+	if (pvid == priv->bridge_pvid[port]) {
+		vlan = priv->static_config.tables[BLK_IDX_VLAN_LOOKUP].entries;
 
-	match = sja1105_is_vlan_configured(priv, pvid);
+		match = sja1105_is_vlan_configured(priv, pvid);
 
-	if (match < 0 || !(vlan[match].vmemb_port & BIT(port)))
+		if (match < 0 || !(vlan[match].vmemb_port & BIT(port)))
+			drop_untagged = true;
+	}
+
+	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
 		drop_untagged = true;
 
 	return sja1105_drop_untagged(ds, port, drop_untagged);
@@ -210,6 +219,12 @@ static int sja1105_init_mac_settings(struct sja1105_private *priv)
 		 */
 		if (dsa_port_is_dsa(dp))
 			dp->learning = true;
+
+		/* Disallow untagged packets from being received on the
+		 * CPU and DSA ports.
+		 */
+		if (dsa_port_is_cpu(dp) || dsa_port_is_dsa(dp))
+			mac[dp->index].drpuntag = true;
 	}
 
 	return 0;
@@ -2280,15 +2295,6 @@ int sja1105_vlan_filtering(struct dsa_switch *ds, int port, bool enabled,
 		tpid2 = ETH_P_SJA1105;
 	}
 
-	for (port = 0; port < ds->num_ports; port++) {
-		struct sja1105_port *sp = &priv->ports[port];
-
-		if (enabled)
-			sp->xmit_tpid = priv->info->qinq_tpid;
-		else
-			sp->xmit_tpid = ETH_P_SJA1105;
-	}
-
 	if (priv->vlan_aware == enabled)
 		return 0;
 
@@ -2345,7 +2351,7 @@ int sja1105_vlan_filtering(struct dsa_switch *ds, int port, bool enabled,
 }
 
 static int sja1105_vlan_add(struct sja1105_private *priv, int port, u16 vid,
-			    u16 flags)
+			    u16 flags, bool allowed_ingress)
 {
 	struct sja1105_vlan_lookup_entry *vlan;
 	struct sja1105_table *table;
@@ -2367,7 +2373,12 @@ static int sja1105_vlan_add(struct sja1105_private *priv, int port, u16 vid,
 	vlan[match].type_entry = SJA1110_VLAN_D_TAG;
 	vlan[match].vlanid = vid;
 	vlan[match].vlan_bc |= BIT(port);
-	vlan[match].vmemb_port |= BIT(port);
+
+	if (allowed_ingress)
+		vlan[match].vmemb_port |= BIT(port);
+	else
+		vlan[match].vmemb_port &= ~BIT(port);
+
 	if (flags & BRIDGE_VLAN_INFO_UNTAGGED)
 		vlan[match].tag_port &= ~BIT(port);
 	else
@@ -2439,7 +2450,7 @@ static int sja1105_bridge_vlan_add(struct dsa_switch *ds, int port,
 	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
 		flags = 0;
 
-	rc = sja1105_vlan_add(priv, port, vlan->vid, flags);
+	rc = sja1105_vlan_add(priv, port, vlan->vid, flags, true);
 	if (rc)
 		return rc;
 
@@ -2469,9 +2480,16 @@ static int sja1105_dsa_8021q_vlan_add(struct dsa_switch *ds, int port, u16 vid,
 				      u16 flags)
 {
 	struct sja1105_private *priv = ds->priv;
+	bool allowed_ingress = true;
 	int rc;
 
-	rc = sja1105_vlan_add(priv, port, vid, flags);
+	/* Prevent attackers from trying to inject a DSA tag from
+	 * the outside world.
+	 */
+	if (dsa_is_user_port(ds, port))
+		allowed_ingress = false;
+
+	rc = sja1105_vlan_add(priv, port, vid, flags, allowed_ingress);
 	if (rc)
 		return rc;
 
@@ -2513,149 +2531,6 @@ static int sja1105_prechangeupper(struct dsa_switch *ds, int port,
 	}
 
 	return 0;
-}
-
-/* The programming model for the SJA1105 switch is "all-at-once" via static
- * configuration tables. Some of these can be dynamically modified at runtime,
- * but not the xMII mode parameters table.
- * Furthermode, some PHYs may not have crystals for generating their clocks
- * (e.g. RMII). Instead, their 50MHz clock is supplied via the SJA1105 port's
- * ref_clk pin. So port clocking needs to be initialized early, before
- * connecting to PHYs is attempted, otherwise they won't respond through MDIO.
- * Setting correct PHY link speed does not matter now.
- * But dsa_slave_phy_setup is called later than sja1105_setup, so the PHY
- * bindings are not yet parsed by DSA core. We need to parse early so that we
- * can populate the xMII mode parameters table.
- */
-static int sja1105_setup(struct dsa_switch *ds)
-{
-	struct sja1105_private *priv = ds->priv;
-	int rc;
-
-	rc = sja1105_parse_dt(priv);
-	if (rc < 0) {
-		dev_err(ds->dev, "Failed to parse DT: %d\n", rc);
-		return rc;
-	}
-
-	/* Error out early if internal delays are required through DT
-	 * and we can't apply them.
-	 */
-	rc = sja1105_parse_rgmii_delays(priv);
-	if (rc < 0) {
-		dev_err(ds->dev, "RGMII delay not supported\n");
-		return rc;
-	}
-
-	rc = sja1105_ptp_clock_register(ds);
-	if (rc < 0) {
-		dev_err(ds->dev, "Failed to register PTP clock: %d\n", rc);
-		return rc;
-	}
-
-	rc = sja1105_mdiobus_register(ds);
-	if (rc < 0) {
-		dev_err(ds->dev, "Failed to register MDIO bus: %pe\n",
-			ERR_PTR(rc));
-		goto out_ptp_clock_unregister;
-	}
-
-	if (priv->info->disable_microcontroller) {
-		rc = priv->info->disable_microcontroller(priv);
-		if (rc < 0) {
-			dev_err(ds->dev,
-				"Failed to disable microcontroller: %pe\n",
-				ERR_PTR(rc));
-			goto out_mdiobus_unregister;
-		}
-	}
-
-	/* Create and send configuration down to device */
-	rc = sja1105_static_config_load(priv);
-	if (rc < 0) {
-		dev_err(ds->dev, "Failed to load static config: %d\n", rc);
-		goto out_mdiobus_unregister;
-	}
-
-	/* Configure the CGU (PHY link modes and speeds) */
-	if (priv->info->clocking_setup) {
-		rc = priv->info->clocking_setup(priv);
-		if (rc < 0) {
-			dev_err(ds->dev,
-				"Failed to configure MII clocking: %pe\n",
-				ERR_PTR(rc));
-			goto out_static_config_free;
-		}
-	}
-
-	/* On SJA1105, VLAN filtering per se is always enabled in hardware.
-	 * The only thing we can do to disable it is lie about what the 802.1Q
-	 * EtherType is.
-	 * So it will still try to apply VLAN filtering, but all ingress
-	 * traffic (except frames received with EtherType of ETH_P_SJA1105)
-	 * will be internally tagged with a distorted VLAN header where the
-	 * TPID is ETH_P_SJA1105, and the VLAN ID is the port pvid.
-	 */
-	ds->vlan_filtering_is_global = true;
-	ds->untag_bridge_pvid = true;
-	/* tag_8021q has 3 bits for the VBID, and the value 0 is reserved */
-	ds->num_fwd_offloading_bridges = 7;
-
-	/* Advertise the 8 egress queues */
-	ds->num_tx_queues = SJA1105_NUM_TC;
-
-	ds->mtu_enforcement_ingress = true;
-	ds->assisted_learning_on_cpu_port = true;
-
-	rc = sja1105_devlink_setup(ds);
-	if (rc < 0)
-		goto out_static_config_free;
-
-	rtnl_lock();
-	rc = dsa_tag_8021q_register(ds, htons(ETH_P_8021Q));
-	rtnl_unlock();
-	if (rc)
-		goto out_devlink_teardown;
-
-	return 0;
-
-out_devlink_teardown:
-	sja1105_devlink_teardown(ds);
-out_mdiobus_unregister:
-	sja1105_mdiobus_unregister(ds);
-out_ptp_clock_unregister:
-	sja1105_ptp_clock_unregister(ds);
-out_static_config_free:
-	sja1105_static_config_free(&priv->static_config);
-
-	return rc;
-}
-
-static void sja1105_teardown(struct dsa_switch *ds)
-{
-	struct sja1105_private *priv = ds->priv;
-	int port;
-
-	rtnl_lock();
-	dsa_tag_8021q_unregister(ds);
-	rtnl_unlock();
-
-	for (port = 0; port < ds->num_ports; port++) {
-		struct sja1105_port *sp = &priv->ports[port];
-
-		if (!dsa_is_user_port(ds, port))
-			continue;
-
-		if (sp->xmit_worker)
-			kthread_destroy_worker(sp->xmit_worker);
-	}
-
-	sja1105_devlink_teardown(ds);
-	sja1105_mdiobus_unregister(ds);
-	sja1105_flower_teardown(ds);
-	sja1105_tas_teardown(ds);
-	sja1105_ptp_clock_unregister(ds);
-	sja1105_static_config_free(&priv->static_config);
 }
 
 static void sja1105_port_disable(struct dsa_switch *ds, int port)
@@ -3060,7 +2935,189 @@ static int sja1105_port_bridge_flags(struct dsa_switch *ds, int port,
 	return 0;
 }
 
-static const struct dsa_switch_ops sja1105_switch_ops = {
+static void sja1105_teardown_ports(struct sja1105_private *priv)
+{
+	struct dsa_switch *ds = priv->ds;
+	int port;
+
+	for (port = 0; port < ds->num_ports; port++) {
+		struct sja1105_port *sp = &priv->ports[port];
+
+		if (sp->xmit_worker)
+			kthread_destroy_worker(sp->xmit_worker);
+	}
+}
+
+static int sja1105_setup_ports(struct sja1105_private *priv)
+{
+	struct sja1105_tagger_data *tagger_data = &priv->tagger_data;
+	struct dsa_switch *ds = priv->ds;
+	int port, rc;
+
+	/* Connections between dsa_port and sja1105_port */
+	for (port = 0; port < ds->num_ports; port++) {
+		struct sja1105_port *sp = &priv->ports[port];
+		struct dsa_port *dp = dsa_to_port(ds, port);
+		struct kthread_worker *worker;
+		struct net_device *slave;
+
+		if (!dsa_port_is_user(dp))
+			continue;
+
+		dp->priv = sp;
+		sp->dp = dp;
+		sp->data = tagger_data;
+		slave = dp->slave;
+		kthread_init_work(&sp->xmit_work, sja1105_port_deferred_xmit);
+		worker = kthread_create_worker(0, "%s_xmit", slave->name);
+		if (IS_ERR(worker)) {
+			rc = PTR_ERR(worker);
+			dev_err(ds->dev,
+				"failed to create deferred xmit thread: %d\n",
+				rc);
+			goto out_destroy_workers;
+		}
+		sp->xmit_worker = worker;
+		skb_queue_head_init(&sp->xmit_queue);
+	}
+
+	return 0;
+
+out_destroy_workers:
+	sja1105_teardown_ports(priv);
+	return rc;
+}
+
+/* The programming model for the SJA1105 switch is "all-at-once" via static
+ * configuration tables. Some of these can be dynamically modified at runtime,
+ * but not the xMII mode parameters table.
+ * Furthermode, some PHYs may not have crystals for generating their clocks
+ * (e.g. RMII). Instead, their 50MHz clock is supplied via the SJA1105 port's
+ * ref_clk pin. So port clocking needs to be initialized early, before
+ * connecting to PHYs is attempted, otherwise they won't respond through MDIO.
+ * Setting correct PHY link speed does not matter now.
+ * But dsa_slave_phy_setup is called later than sja1105_setup, so the PHY
+ * bindings are not yet parsed by DSA core. We need to parse early so that we
+ * can populate the xMII mode parameters table.
+ */
+static int sja1105_setup(struct dsa_switch *ds)
+{
+	struct sja1105_private *priv = ds->priv;
+	int rc;
+
+	if (priv->info->disable_microcontroller) {
+		rc = priv->info->disable_microcontroller(priv);
+		if (rc < 0) {
+			dev_err(ds->dev,
+				"Failed to disable microcontroller: %pe\n",
+				ERR_PTR(rc));
+			return rc;
+		}
+	}
+
+	/* Create and send configuration down to device */
+	rc = sja1105_static_config_load(priv);
+	if (rc < 0) {
+		dev_err(ds->dev, "Failed to load static config: %d\n", rc);
+		return rc;
+	}
+
+	/* Configure the CGU (PHY link modes and speeds) */
+	if (priv->info->clocking_setup) {
+		rc = priv->info->clocking_setup(priv);
+		if (rc < 0) {
+			dev_err(ds->dev,
+				"Failed to configure MII clocking: %pe\n",
+				ERR_PTR(rc));
+			goto out_static_config_free;
+		}
+	}
+
+	rc = sja1105_setup_ports(priv);
+	if (rc)
+		goto out_static_config_free;
+
+	sja1105_tas_setup(ds);
+	sja1105_flower_setup(ds);
+
+	rc = sja1105_ptp_clock_register(ds);
+	if (rc < 0) {
+		dev_err(ds->dev, "Failed to register PTP clock: %d\n", rc);
+		goto out_flower_teardown;
+	}
+
+	rc = sja1105_mdiobus_register(ds);
+	if (rc < 0) {
+		dev_err(ds->dev, "Failed to register MDIO bus: %pe\n",
+			ERR_PTR(rc));
+		goto out_ptp_clock_unregister;
+	}
+
+	rc = sja1105_devlink_setup(ds);
+	if (rc < 0)
+		goto out_mdiobus_unregister;
+
+	rtnl_lock();
+	rc = dsa_tag_8021q_register(ds, htons(ETH_P_8021Q));
+	rtnl_unlock();
+	if (rc)
+		goto out_devlink_teardown;
+
+	/* On SJA1105, VLAN filtering per se is always enabled in hardware.
+	 * The only thing we can do to disable it is lie about what the 802.1Q
+	 * EtherType is.
+	 * So it will still try to apply VLAN filtering, but all ingress
+	 * traffic (except frames received with EtherType of ETH_P_SJA1105)
+	 * will be internally tagged with a distorted VLAN header where the
+	 * TPID is ETH_P_SJA1105, and the VLAN ID is the port pvid.
+	 */
+	ds->vlan_filtering_is_global = true;
+	ds->untag_bridge_pvid = true;
+	/* tag_8021q has 3 bits for the VBID, and the value 0 is reserved */
+	ds->num_fwd_offloading_bridges = 7;
+
+	/* Advertise the 8 egress queues */
+	ds->num_tx_queues = SJA1105_NUM_TC;
+
+	ds->mtu_enforcement_ingress = true;
+	ds->assisted_learning_on_cpu_port = true;
+
+	return 0;
+
+out_devlink_teardown:
+	sja1105_devlink_teardown(ds);
+out_mdiobus_unregister:
+	sja1105_mdiobus_unregister(ds);
+out_ptp_clock_unregister:
+	sja1105_ptp_clock_unregister(ds);
+out_flower_teardown:
+	sja1105_flower_teardown(ds);
+	sja1105_tas_teardown(ds);
+	sja1105_teardown_ports(priv);
+out_static_config_free:
+	sja1105_static_config_free(&priv->static_config);
+
+	return rc;
+}
+
+static void sja1105_teardown(struct dsa_switch *ds)
+{
+	struct sja1105_private *priv = ds->priv;
+
+	rtnl_lock();
+	dsa_tag_8021q_unregister(ds);
+	rtnl_unlock();
+
+	sja1105_devlink_teardown(ds);
+	sja1105_mdiobus_unregister(ds);
+	sja1105_ptp_clock_unregister(ds);
+	sja1105_flower_teardown(ds);
+	sja1105_tas_teardown(ds);
+	sja1105_teardown_ports(priv);
+	sja1105_static_config_free(&priv->static_config);
+}
+
+const struct dsa_switch_ops sja1105_switch_ops = {
 	.get_tag_protocol	= sja1105_get_tag_protocol,
 	.setup			= sja1105_setup,
 	.teardown		= sja1105_teardown,
@@ -3109,6 +3166,7 @@ static const struct dsa_switch_ops sja1105_switch_ops = {
 	.port_bridge_tx_fwd_offload = dsa_tag_8021q_bridge_tx_fwd_offload,
 	.port_bridge_tx_fwd_unoffload = dsa_tag_8021q_bridge_tx_fwd_unoffload,
 };
+EXPORT_SYMBOL_GPL(sja1105_switch_ops);
 
 static const struct of_device_id sja1105_dt_ids[];
 
@@ -3161,12 +3219,11 @@ static int sja1105_check_device_id(struct sja1105_private *priv)
 
 static int sja1105_probe(struct spi_device *spi)
 {
-	struct sja1105_tagger_data *tagger_data;
 	struct device *dev = &spi->dev;
 	struct sja1105_private *priv;
 	size_t max_xfer, max_msg;
 	struct dsa_switch *ds;
-	int rc, port;
+	int rc;
 
 	if (!dev->of_node) {
 		dev_err(dev, "No DTS bindings for SJA1105 driver\n");
@@ -3246,71 +3303,33 @@ static int sja1105_probe(struct spi_device *spi)
 	ds->priv = priv;
 	priv->ds = ds;
 
-	tagger_data = &priv->tagger_data;
-
 	mutex_init(&priv->ptp_data.lock);
 	mutex_init(&priv->mgmt_lock);
 
-	sja1105_tas_setup(ds);
-	sja1105_flower_setup(ds);
-
-	rc = dsa_register_switch(priv->ds);
-	if (rc)
+	rc = sja1105_parse_dt(priv);
+	if (rc < 0) {
+		dev_err(ds->dev, "Failed to parse DT: %d\n", rc);
 		return rc;
+	}
+
+	/* Error out early if internal delays are required through DT
+	 * and we can't apply them.
+	 */
+	rc = sja1105_parse_rgmii_delays(priv);
+	if (rc < 0) {
+		dev_err(ds->dev, "RGMII delay not supported\n");
+		return rc;
+	}
 
 	if (IS_ENABLED(CONFIG_NET_SCH_CBS)) {
 		priv->cbs = devm_kcalloc(dev, priv->info->num_cbs_shapers,
 					 sizeof(struct sja1105_cbs_entry),
 					 GFP_KERNEL);
-		if (!priv->cbs) {
-			rc = -ENOMEM;
-			goto out_unregister_switch;
-		}
+		if (!priv->cbs)
+			return -ENOMEM;
 	}
 
-	/* Connections between dsa_port and sja1105_port */
-	for (port = 0; port < ds->num_ports; port++) {
-		struct sja1105_port *sp = &priv->ports[port];
-		struct dsa_port *dp = dsa_to_port(ds, port);
-		struct net_device *slave;
-
-		if (!dsa_is_user_port(ds, port))
-			continue;
-
-		dp->priv = sp;
-		sp->dp = dp;
-		sp->data = tagger_data;
-		slave = dp->slave;
-		kthread_init_work(&sp->xmit_work, sja1105_port_deferred_xmit);
-		sp->xmit_worker = kthread_create_worker(0, "%s_xmit",
-							slave->name);
-		if (IS_ERR(sp->xmit_worker)) {
-			rc = PTR_ERR(sp->xmit_worker);
-			dev_err(ds->dev,
-				"failed to create deferred xmit thread: %d\n",
-				rc);
-			goto out_destroy_workers;
-		}
-		skb_queue_head_init(&sp->xmit_queue);
-		sp->xmit_tpid = ETH_P_SJA1105;
-	}
-
-	return 0;
-
-out_destroy_workers:
-	while (port-- > 0) {
-		struct sja1105_port *sp = &priv->ports[port];
-
-		if (!dsa_is_user_port(ds, port))
-			continue;
-
-		kthread_destroy_worker(sp->xmit_worker);
-	}
-
-out_unregister_switch:
-	dsa_unregister_switch(ds);
-
-	return rc;
+	return dsa_register_switch(priv->ds);
 }
 
 static int sja1105_remove(struct spi_device *spi)
