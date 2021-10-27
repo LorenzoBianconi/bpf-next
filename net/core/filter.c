@@ -78,6 +78,7 @@
 #include <linux/btf_ids.h>
 #include <net/tls.h>
 #include <net/xdp.h>
+#include <linux/if_bridge.h>
 
 static const struct bpf_func_proto *
 bpf_sk_base_func_proto(enum bpf_func_id func_id);
@@ -5817,6 +5818,36 @@ static const struct bpf_func_proto bpf_xdp_check_mtu_proto = {
 	.arg5_type      = ARG_ANYTHING,
 };
 
+BPF_CALL_3(bpf_xdp_fdb_lookup, struct xdp_buff *, ctx,
+	   struct bpf_fdb_lookup *, params, int, plen)
+{
+	struct net_device *dev;
+
+	if (plen < sizeof(struct bpf_fdb_lookup))
+		return -EINVAL;
+
+	if (is_multicast_ether_addr(params->addr))
+		return BPF_FDB_LKUP_RET_NOENT;
+
+	dev = br_fdb_find_port_from_ifindex(dev_net(ctx->rxq->dev),
+					    params->addr, params->ifindex,
+					    params->vlan_id);
+	if (!dev)
+		return BPF_FDB_LKUP_RET_NOENT;
+
+	params->ifindex = dev->ifindex;
+	return BPF_FDB_LKUP_RET_SUCCESS;
+}
+
+static const struct bpf_func_proto bpf_xdp_fdb_lookup_proto = {
+	.func		= bpf_xdp_fdb_lookup,
+	.gpl_only	= true,
+	.ret_type	= RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_PTR_TO_MEM,
+	.arg3_type      = ARG_CONST_SIZE,
+};
+
 #if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 static int bpf_push_seg6_encap(struct sk_buff *skb, u32 type, void *hdr, u32 len)
 {
@@ -7473,6 +7504,8 @@ xdp_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_xdp_adjust_tail_proto;
 	case BPF_FUNC_fib_lookup:
 		return &bpf_xdp_fib_lookup_proto;
+	case BPF_FUNC_xdp_fdb_lookup:
+		return &bpf_xdp_fdb_lookup_proto;
 	case BPF_FUNC_check_mtu:
 		return &bpf_xdp_check_mtu_proto;
 #ifdef CONFIG_INET

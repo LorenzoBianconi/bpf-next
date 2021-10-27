@@ -7,6 +7,8 @@
  *	Lennert Buytenhek		<buytenh@gnu.org>
  */
 
+#include <linux/btf.h>
+#include <linux/btf_ids.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -365,6 +367,12 @@ static const struct stp_proto br_stp_proto = {
 	.rcv	= br_stp_rcv,
 };
 
+BTF_SET_START(br_xdp_kfunc_ids)
+BTF_ID(func, br_fdb_find_port_from_ifindex)
+BTF_SET_END(br_xdp_kfunc_ids)
+
+static DEFINE_KFUNC_BTF_ID_SET(&br_xdp_kfunc_ids, br_xdp_kfunc_btf_set);
+
 static int __init br_init(void)
 {
 	int err;
@@ -417,6 +425,7 @@ static int __init br_init(void)
 		"need this.\n");
 #endif
 
+	register_kfunc_btf_id_set(&bpf_xdp_kfunc_list, &br_xdp_kfunc_btf_set);
 	return 0;
 
 err_out6:
@@ -438,6 +447,7 @@ err_out:
 
 static void __exit br_deinit(void)
 {
+	unregister_kfunc_btf_id_set(&bpf_xdp_kfunc_list, &br_xdp_kfunc_btf_set);
 	stp_proto_unregister(&br_stp_proto);
 	br_netlink_fini();
 	unregister_switchdev_blocking_notifier(&br_switchdev_blocking_notifier);

@@ -4915,6 +4915,21 @@ union bpf_attr {
  *		Dynamically cast a *sk* pointer to a *unix_sock* pointer.
  *	Return
  *		*sk* if casting is valid, or **NULL** otherwise.
+ *
+ * long bpf_xdp_fdb_lookup(void *ctx, struct bpf_fdb_lookup *params, int plen)
+ *	Description
+ *		Do FDB lookup in bridge kernel tables using parameters in *params*.
+ *		If lookup is successful (i.e. FDB lookup finds a destination entry),
+ *		ifindex is set to the egress device index from the FDB lookup and
+ *		BPF_FDB_LKUP_RET_SUCCESS is returned.
+ *		BPF_FDB_LKUP_RET_NOENT is returned for multicast/broadcast traffic
+ *		or if the requested address is not present in the FDB table.
+ *		*plen* argument is the size of the passed **struct bpf_fdb_lookup**.
+ *	Return
+ *		A negative number in case of error.
+ *		BPF_FDB_LKUP_RET_NOENT if any input argument is invalid or lookup fails.
+ *		BPF_FDB_LKUP_RET_SUCCESS on success.
+ *
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -5096,6 +5111,7 @@ union bpf_attr {
 	FN(get_branch_snapshot),	\
 	FN(trace_vprintk),		\
 	FN(skc_to_unix_sock),		\
+	FN(xdp_fdb_lookup),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
@@ -6143,6 +6159,17 @@ struct bpf_fib_lookup {
 	__be16	h_vlan_TCI;
 	__u8	smac[6];     /* ETH_ALEN */
 	__u8	dmac[6];     /* ETH_ALEN */
+};
+
+enum {
+	BPF_FDB_LKUP_RET_SUCCESS,	/* lookup successful */
+	BPF_FDB_LKUP_RET_NOENT,		/* entry not found */
+};
+
+struct bpf_fdb_lookup {
+	__u8	addr[6];	/* ETH_ALEN */
+	__u16	vlan_id;
+	__u32	ifindex;
 };
 
 struct bpf_redir_neigh {
