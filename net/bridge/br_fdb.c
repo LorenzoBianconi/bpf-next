@@ -117,29 +117,61 @@ static struct net_bridge_fdb_entry *br_fdb_find(struct net_bridge *br,
 	return fdb;
 }
 
-struct net_device *br_fdb_find_port(const struct net_device *br_dev,
-				    const unsigned char *addr,
-				    __u16 vid)
+static struct net_device *
+__br_fdb_find_port(const struct net_device *br_dev,
+		   const unsigned char *addr,
+		   __u16 vid)
 {
 	struct net_bridge_fdb_entry *f;
-	struct net_device *dev = NULL;
 	struct net_bridge *br;
-
-	ASSERT_RTNL();
 
 	if (!netif_is_bridge_master(br_dev))
 		return NULL;
 
 	br = netdev_priv(br_dev);
-	rcu_read_lock();
 	f = br_fdb_find_rcu(br, addr, vid);
-	if (f && f->dst)
-		dev = f->dst->dev;
+	return f && f->dst ? f->dst->dev : NULL;
+}
+
+struct net_device *br_fdb_find_port(const struct net_device *br_dev,
+				    const unsigned char *addr,
+				    __u16 vid)
+{
+	struct net_device *dev;
+
+	ASSERT_RTNL();
+
+	rcu_read_lock();
+	dev = __br_fdb_find_port(br_dev, addr, vid);
 	rcu_read_unlock();
 
 	return dev;
 }
 EXPORT_SYMBOL_GPL(br_fdb_find_port);
+
+struct net_device *
+br_fdb_find_port_from_ifindex(struct net *net, const unsigned char *addr,
+			      __u32 ifindex, __u16 vid)
+{
+	struct net_bridge_port *port;
+	struct net_device *dev;
+
+	WARN_ON_ONCE(!rcu_read_lock_held());
+
+	dev = dev_get_by_index_rcu(net, ifindex);
+	if (!dev)
+		return NULL;
+
+	if (unlikely(!netif_is_bridge_port(dev)))
+		return NULL;
+
+	port = br_port_get_check_rcu(dev);
+	if (unlikely(!port || !port->br))
+		return NULL;
+
+	return __br_fdb_find_port(port->br->dev, addr, vid);
+}
+EXPORT_SYMBOL_GPL(br_fdb_find_port_from_ifindex);
 
 struct net_bridge_fdb_entry *br_fdb_find_rcu(struct net_bridge *br,
 					     const unsigned char *addr,
