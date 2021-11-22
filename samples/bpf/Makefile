@@ -180,8 +180,6 @@ always-y += xdp_fwd_kern.o
 always-y += task_fd_query_kern.o
 always-y += xdp_sample_pkts_kern.o
 always-y += ibumad_kern.o
-always-y += hbm_out_kern.o
-always-y += hbm_edt_kern.o
 always-y += xdpsock_kern.o
 always-y += xdp_mb_kern.o
 
