@@ -10,17 +10,15 @@
  * General Public License for more details.
  */
 #define KBUILD_MODNAME "foo"
-#include <uapi/linux/bpf.h>
-#include <linux/in.h>
-#include <linux/if_ether.h>
-#include <linux/if_packet.h>
-#include <linux/ip.h>
-#include <linux/icmp.h>
-#include <linux/udp.h>
-#include <bpf/bpf_helpers.h>
+
+#include "vmlinux.h"
+#include "xdp_sample.bpf.h"
+#include "xdp_sample_shared.h"
 
 #define ICMP_TOOBIG_SIZE		98
 #define ICMP_TOOBIG_PAYLOAD_SIZE	92
+#define ICMP_DEST_UNREACH		3
+#define ICMP_FRAG_NEEDED		4
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -46,8 +44,8 @@ swap_mac(void *data, struct ethhdr *orig_eth)
 {
 	struct ethhdr *eth = data;
 
-	memcpy(eth->h_source, orig_eth->h_dest, ETH_ALEN);
-	memcpy(eth->h_dest, orig_eth->h_source, ETH_ALEN);
+	__builtin_memcpy(eth->h_source, orig_eth->h_dest, ETH_ALEN);
+	__builtin_memcpy(eth->h_dest, orig_eth->h_source, ETH_ALEN);
 	eth->h_proto = orig_eth->h_proto;
 }
 
@@ -81,7 +79,8 @@ send_icmp4_too_big(struct xdp_md *xdp, int max_packet_size)
 	orig_iph = data + off;
 	icmp_hdr->type = ICMP_DEST_UNREACH;
 	icmp_hdr->code = ICMP_FRAG_NEEDED;
-	icmp_hdr->un.frag.mtu = htons(max_packet_size - sizeof(struct ethhdr));
+	icmp_hdr->un.frag.mtu = bpf_htons(max_packet_size -
+					  sizeof(struct ethhdr));
 	icmp_hdr->checksum = 0;
 	ipv4_csum(icmp_hdr, ICMP_TOOBIG_PAYLOAD_SIZE, &csum);
 	icmp_hdr->checksum = csum;
@@ -92,7 +91,8 @@ send_icmp4_too_big(struct xdp_md *xdp, int max_packet_size)
 	iph->ihl = 5;
 	iph->protocol = IPPROTO_ICMP;
 	iph->tos = 0;
-	iph->tot_len = htons(ICMP_TOOBIG_SIZE + headroom - sizeof(struct ethhdr));
+	iph->tot_len = bpf_htons(ICMP_TOOBIG_SIZE + headroom -
+				 sizeof(struct ethhdr));
 	iph->check = 0;
 	csum = 0;
 	ipv4_csum(iph, sizeof(struct iphdr), &csum);
@@ -101,20 +101,20 @@ send_icmp4_too_big(struct xdp_md *xdp, int max_packet_size)
 	return XDP_TX;
 }
 
-SEC("xdp_check_mtu")
-int xdp_check_mtu_prog(struct xdp_md *xdp)
+SEC("xdp")
+int xdp_check_mtu(struct xdp_md *xdp)
 {
 	void *data_end = (void *)(long)xdp->data_end;
 	void *data = (void *)(long)xdp->data;
 	int len = data_end - data;
 	struct ethhdr *eth = data;
-	u32 *mtu, pkt_size;
 	struct iphdr *iph;
+	u32 *mtu, size;
 
 	if (data + sizeof(*eth) > data_end)
 		return XDP_DROP;
 
-	if (eth->h_proto != ntohs(ETH_P_IP))
+	if (eth->h_proto != bpf_ntohs(ETH_P_IP))
 		return XDP_PASS;
 
 	iph = (struct iphdr *)(eth + 1);
@@ -125,14 +125,17 @@ int xdp_check_mtu_prog(struct xdp_md *xdp)
 	if (!mtu)
 		return XDP_PASS;
 
-	pkt_size = sizeof(*eth) + *mtu;
-	if (len > max(pkt_size, ICMP_TOOBIG_SIZE)) {
+	size = sizeof(*eth) + *mtu;
+	if (size < ICMP_TOOBIG_SIZE)
+		size = ICMP_TOOBIG_SIZE;
+
+	if (len > size) {
 		int offset = len - ICMP_TOOBIG_SIZE;
 
 		if (bpf_xdp_adjust_tail(xdp, 0 - offset))
 			return XDP_PASS;
 
-		return send_icmp4_too_big(xdp, pkt_size);
+		return send_icmp4_too_big(xdp, size);
 	}
 
 	return XDP_PASS;

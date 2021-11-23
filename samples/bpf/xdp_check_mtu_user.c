@@ -18,33 +18,25 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <net/if.h>
+#include <getopt.h>
+#include <libgen.h>
 
 #include "bpf_util.h"
 #include <bpf/bpf.h>
-#include <libgen.h>
+#include <bpf/libbpf.h>
+#include "bpf_util.h"
+#include "xdp_sample_user.h"
+#include "xdp_check_mtu.skel.h"
 
 struct ip_mtu_pair {
 	__be32 dst;
 	__u32 mtu;
 };
 static struct ip_mtu_pair *ip_mtu_list;
-
-static int flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
-static int mtu_ipv4_match_fd;
 static int if_index;
+static int mask;
 
-static void close_and_exit(int sig)
-{
-	__u32 prog_id = 0;
-
-	if (bpf_get_link_xdp_id(if_index, &prog_id, flags)) {
-		printf("bpf_get_link_xdp_id on iface %d failed\n", if_index);
-		exit(1);
-	}
-	if (prog_id)
-		bpf_set_link_xdp_fd(if_index, -1, flags);
-	exit(0);
-}
+DEFINE_SAMPLE_INIT(xdp_check_mtu);
 
 static void usage(const char *prog)
 {
@@ -97,21 +89,16 @@ static int parse_ip_mtu_pair(char *pair, int n_pair)
 
 int main(int argc, char **argv)
 {
-	struct bpf_prog_load_attr prog_load_attr = {
-		.prog_type	= BPF_PROG_TYPE_XDP,
-	};
-	const char *optstr = "hS";
-	struct bpf_object *obj;
-	int prog_fd, i, opt;
-	char filename[256];
+	int i, opt, ret = EXIT_FAIL_OPTION;
+	struct bpf_map *mtu_ipv4_map;
+	struct xdp_check_mtu *skel;
+	struct bpf_program *prog;
+	bool generic = false;
 
-	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
-	prog_load_attr.file = filename;
-
-	while ((opt = getopt(argc, argv, optstr)) != -1) {
+	while ((opt = getopt(argc, argv, "hS")) != -1) {
 		switch (opt) {
 		case 'S':
-			flags |= XDP_FLAGS_SKB_MODE;
+			generic = true;
 			break;
 		case 'h':
 			usage(basename(argv[0]));
@@ -122,59 +109,68 @@ int main(int argc, char **argv)
 	}
 	if (argc < optind + 2) {
 		usage(basename(argv[0]));
-		return 1;
+		goto out;
 	}
 
 	if_index = if_nametoindex(argv[optind]);
 	if (!if_index) {
-		printf("Couldn't translate interface name: %s", argv[optind]);
-		return 1;
+		fprintf(stderr, "Failed to translate interface name %s\n",
+			argv[optind]);
+		goto out;
 	}
 
 	if (parse_ip_mtu_pair(argv[optind + 1], argc - 1 - optind)) {
 		usage(basename(argv[0]));
-		goto error;
+		goto out;
 	}
 
-	if (!(flags & XDP_FLAGS_SKB_MODE))
-		flags |= XDP_FLAGS_DRV_MODE;
-
-	if (bpf_prog_load_xattr(&prog_load_attr, &obj, &prog_fd))
-		goto error;
-
-	if (!prog_fd) {
-		printf("bpf_prog_load_xattr: %s\n", strerror(errno));
-		goto error;
+	skel = xdp_check_mtu__open();
+	if (!skel) {
+		fprintf(stderr, "Failed to xdp_check_mtu__open: %s\n",
+			strerror(errno));
+		ret = EXIT_FAIL_BPF;
+		goto out;
 	}
 
-	if (bpf_set_link_xdp_fd(if_index, prog_fd, flags) < 0) {
-		printf("link set xdp fd failed\n");
-		goto error;
+	ret = sample_init(skel, mask);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to initialize sample: %s\n", strerror(-ret));
+		ret = EXIT_FAIL;
+		goto out_destroy;
 	}
 
-	mtu_ipv4_match_fd = bpf_object__find_map_fd_by_name(obj,
-							    "mtu_ipv4_match");
-	if (mtu_ipv4_match_fd < 0) {
-		printf("bpf_object__find_map_fd_by_name failed\n");
-		goto error;
+	prog = skel->progs.xdp_check_mtu;
+	if (sample_install_xdp(prog, if_index, generic, false) < 0) {
+		fprintf(stderr, "Failed to install XDP program\n");
+		ret = EXIT_FAIL_XDP;
+		goto out_destroy;
 	}
 
+	mtu_ipv4_map = skel->maps.mtu_ipv4_match;
 	for (i = 0; i < argc - 1 - optind; i++) {
-		if (bpf_map_update_elem(mtu_ipv4_match_fd, &ip_mtu_list[i].dst,
-					&ip_mtu_list[i].mtu, 0) < 0)
-			goto error;
+		ret = bpf_map_update_elem(bpf_map__fd(mtu_ipv4_map),
+					  &ip_mtu_list[i].dst,
+					  &ip_mtu_list[i].mtu, 0);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to update map value %s\n",
+				strerror(errno));
+			ret = EXIT_FAIL_BPF;
+			goto out_destroy;
+		}
 	}
+
+	ret = sample_run(1, NULL, NULL);
+	if (ret < 0) {
+		fprintf(stderr, "Failed during sample run: %s\n",
+			strerror(-ret));
+		ret = EXIT_FAIL;
+		goto out_destroy;
+	}
+	ret = EXIT_OK;
+
+out_destroy:
+	xdp_check_mtu__destroy(skel);
+out:
 	free(ip_mtu_list);
-
-	signal(SIGINT, close_and_exit);
-	signal(SIGTERM, close_and_exit);
-
-	while (true)
-		sleep(1);
-
-	return 0;
-
-error:
-	free(ip_mtu_list);
-	return 1;
+	sample_exit(ret);
 }
