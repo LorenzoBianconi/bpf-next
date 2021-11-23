@@ -130,12 +130,24 @@ int xdp_check_mtu(struct xdp_md *xdp)
 		size = ICMP_TOOBIG_SIZE;
 
 	if (len > size) {
-		int offset = len - ICMP_TOOBIG_SIZE;
+		int ret, offset = len - ICMP_TOOBIG_SIZE;
 
 		if (bpf_xdp_adjust_tail(xdp, 0 - offset))
 			return XDP_PASS;
 
-		return send_icmp4_too_big(xdp, size);
+		ret = send_icmp4_too_big(xdp, size);
+		if (ret == XDP_TX) {
+			u32 key = bpf_get_smp_processor_id();
+			struct datarec *rec;
+
+			rec = bpf_map_lookup_elem(&rx_cnt, &key);
+			if (!rec)
+				return ret;
+
+			NO_TEAR_INC(rec->processed);
+		}
+
+		return ret;
 	}
 
 	return XDP_PASS;

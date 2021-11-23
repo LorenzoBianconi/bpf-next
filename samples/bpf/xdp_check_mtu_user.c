@@ -34,7 +34,7 @@ struct ip_mtu_pair {
 };
 static struct ip_mtu_pair *ip_mtu_list;
 static int if_index;
-static int mask;
+static int mask = SAMPLE_RX_CNT;
 
 DEFINE_SAMPLE_INIT(xdp_check_mtu);
 
@@ -130,6 +130,13 @@ int main(int argc, char **argv)
 			strerror(errno));
 		ret = EXIT_FAIL_BPF;
 		goto out;
+	}
+
+	ret = sample_init_pre_load(skel);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to sample_init_pre_load: %s\n", strerror(-ret));
+		ret = EXIT_FAIL_BPF;
+		goto out_destroy;
 	}
 
 	ret = sample_init(skel, mask);
