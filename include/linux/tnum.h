@@ -61,6 +61,11 @@ static inline bool tnum_is_const(struct tnum a)
 	return !a.mask;
 }
 
+static inline bool tnum_bits_are_const(struct tnum a, u64 bitmask)
+{
+	return !(a.mask & bitmask);
+}
+
 /* Returns true if @a == tnum_const(@b) */
 static inline bool tnum_equals_const(struct tnum a, u64 b)
 {

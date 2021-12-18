@@ -24,6 +24,7 @@
 #include <linux/bpf_lsm.h>
 #include <linux/btf_ids.h>
 #include <linux/poison.h>
+#include <linux/xdp_features.h>
 
 #include "disasm.h"
 
@@ -7433,6 +7434,28 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_user_ringbuf_callback_state);
 		break;
+	case BPF_FUNC_redirect_map:
+		if (resolve_prog_type(env->prog) == BPF_PROG_TYPE_XDP &&
+		    tnum_bits_are_const(regs[BPF_REG_3].var_off, 0x3)) {
+			xdp_features_t *xdp_featp = &env->prog->aux->xdp_features;
+
+			/* These can always be returned */
+			*xdp_featp = XDP_F_ABORTED | XDP_F_REDIRECT;
+			switch (regs[BPF_REG_3].var_off.value & 0x3) {
+			case XDP_DROP:
+				*xdp_featp = XDP_F_DROP;
+				break;
+			case XDP_PASS:
+				*xdp_featp = XDP_F_PASS;
+				break;
+			case XDP_TX:
+				*xdp_featp = XDP_F_TX;
+				break;
+			default:
+				break;
+			}
+		}
+		break;
 	}
 
 	if (err)
@@ -10636,6 +10659,29 @@ static int check_return_code(struct bpf_verifier_env *env)
 		}
 		break;
 
+	case BPF_PROG_TYPE_XDP:
+		if (tnum_is_const(reg->var_off)) {
+			switch (reg->var_off.value) {
+			case XDP_ABORTED:
+				prog->aux->xdp_features |= XDP_F_ABORTED;
+				break;
+			case XDP_DROP:
+				prog->aux->xdp_features |= XDP_F_DROP;
+				break;
+			case XDP_PASS:
+				prog->aux->xdp_features |= XDP_F_PASS;
+				break;
+			case XDP_TX:
+				prog->aux->xdp_features |= XDP_F_TX;
+				break;
+			case XDP_REDIRECT:
+				prog->aux->xdp_features |= XDP_F_REDIRECT;
+				break;
+			default:
+				break;
+			}
+		}
+		fallthrough;
 	case BPF_PROG_TYPE_EXT:
 		/* freplace program can return anything as its return value
 		 * depends on the to-be-replaced kernel func or bpf program.

@@ -28,6 +28,7 @@
 #include <linux/btf.h>
 #include <linux/rcupdate_trace.h>
 #include <linux/init.h>
+#include <linux/xdp_features.h>
 
 struct bpf_verifier_env;
 struct bpf_verifier_log;
@@ -1149,6 +1150,7 @@ struct bpf_prog_aux {
 	struct bpf_prog *prog;
 	struct user_struct *user;
 	u64 load_time; /* ns since boottime */
+	xdp_features_t xdp_features;
 	u32 verified_insns;
 	int cgroup_atype; /* enum cgroup_bpf_attach_type */
 	struct bpf_map *cgroup_storage[MAX_BPF_CGROUP_STORAGE_TYPE];
