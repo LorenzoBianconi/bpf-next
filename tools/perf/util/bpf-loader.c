@@ -54,6 +54,7 @@ static bool libbpf_initialized;
 struct bpf_object *
 bpf__prepare_load_buffer(void *obj_buf, size_t obj_buf_sz, const char *name)
 {
+	LIBBPF_OPTS(bpf_object_open_opts, opts, .object_name = name);
 	struct bpf_object *obj;
 
 	if (!libbpf_initialized) {
@@ -61,7 +62,7 @@ bpf__prepare_load_buffer(void *obj_buf, size_t obj_buf_sz, const char *name)
 		libbpf_initialized = true;
 	}
 
-	obj = bpf_object__open_buffer(obj_buf, obj_buf_sz, name);
+	obj = bpf_object__open_mem(obj_buf, obj_buf_sz, &opts);
 	if (IS_ERR_OR_NULL(obj)) {
 		pr_debug("bpf: failed to load buffer\n");
 		return ERR_PTR(-EINVAL);
@@ -72,6 +73,7 @@ bpf__prepare_load_buffer(void *obj_buf, size_t obj_buf_sz, const char *name)
 
 struct bpf_object *bpf__prepare_load(const char *filename, bool source)
 {
+	LIBBPF_OPTS(bpf_object_open_opts, opts, .object_name = filename);
 	struct bpf_object *obj;
 
 	if (!libbpf_initialized) {
@@ -94,7 +96,7 @@ struct bpf_object *bpf__prepare_load(const char *filename, bool source)
 				return ERR_PTR(-BPF_LOADER_ERRNO__COMPILE);
 		} else
 			pr_debug("bpf: successful builtin compilation\n");
-		obj = bpf_object__open_buffer(obj_buf, obj_buf_sz, filename);
+		obj = bpf_object__open_mem(obj_buf, obj_buf_sz, &opts);
 
 		if (!IS_ERR_OR_NULL(obj) && llvm_param.dump_obj)
 			llvm__dump_obj(filename, obj_buf, obj_buf_sz);
@@ -424,7 +426,7 @@ preproc_gen_prologue(struct bpf_program *prog, int n,
 	size_t prologue_cnt = 0;
 	int i, err;
 
-	if (IS_ERR(priv) || !priv || priv->is_tp)
+	if (IS_ERR_OR_NULL(priv) || priv->is_tp)
 		goto errout;
 
 	pev = &priv->pev;
@@ -573,7 +575,7 @@ static int hook_load_preprocessor(struct bpf_program *prog)
 	bool need_prologue = false;
 	int err, i;
 
-	if (IS_ERR(priv) || !priv) {
+	if (IS_ERR_OR_NULL(priv)) {
 		pr_debug("Internal error when hook preprocessor\n");
 		return -BPF_LOADER_ERRNO__INTERNAL;
 	}
@@ -645,8 +647,11 @@ int bpf__probe(struct bpf_object *obj)
 			goto out;
 
 		priv = bpf_program__priv(prog);
-		if (IS_ERR(priv) || !priv) {
-			err = PTR_ERR(priv);
+		if (IS_ERR_OR_NULL(priv)) {
+			if (!priv)
+				err = -BPF_LOADER_ERRNO__INTERNAL;
+			else
+				err = PTR_ERR(priv);
 			goto out;
 		}
 
@@ -696,7 +701,7 @@ int bpf__unprobe(struct bpf_object *obj)
 		struct bpf_prog_priv *priv = bpf_program__priv(prog);
 		int i;
 
-		if (IS_ERR(priv) || !priv || priv->is_tp)
+		if (IS_ERR_OR_NULL(priv) || priv->is_tp)
 			continue;
 
 		for (i = 0; i < priv->pev.ntevs; i++) {
@@ -754,7 +759,7 @@ int bpf__foreach_event(struct bpf_object *obj,
 		struct perf_probe_event *pev;
 		int i, fd;
 
-		if (IS_ERR(priv) || !priv) {
+		if (IS_ERR_OR_NULL(priv)) {
 			pr_debug("bpf: failed to get private field\n");
 			return -BPF_LOADER_ERRNO__INTERNAL;
 		}
