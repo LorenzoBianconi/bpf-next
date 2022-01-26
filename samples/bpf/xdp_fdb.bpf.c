@@ -22,15 +22,9 @@ struct {
 	__uint(max_entries, 64);
 } br_ports SEC(".maps");
 
-struct bpf_fdb_lookup {
-	__u8	addr[ETH_ALEN];
-	__u16	vid;
-	__u32	ifindex;
-};
-
 int br_fdb_find_port_from_ifindex(struct xdp_md *xdp_ctx,
-				  struct bpf_fdb_lookup *opt,
-				  u32 opt__sz) __ksym;
+				  const u8 *addr, u32 ifindex,
+				  u16 vid) __ksym;
 
 SEC("xdp")
 int xdp_fdb_lookup(struct xdp_md *ctx)
@@ -38,9 +32,6 @@ int xdp_fdb_lookup(struct xdp_md *ctx)
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data = (void *)(long)ctx->data;
 	u32 key = bpf_get_smp_processor_id();
-	struct bpf_fdb_lookup params = {
-		.ifindex = ctx->ingress_ifindex,
-	};
 	struct ethhdr *eth = data;
 	u64 nh_off = sizeof(*eth);
 	struct datarec *rec;
@@ -55,9 +46,8 @@ int xdp_fdb_lookup(struct xdp_md *ctx)
 
 	NO_TEAR_INC(rec->processed);
 
-	__builtin_memcpy(params.addr, eth->h_dest, ETH_ALEN);
-	ret = br_fdb_find_port_from_ifindex(ctx, &params,
-					    sizeof(struct bpf_fdb_lookup));
+	ret = br_fdb_find_port_from_ifindex(ctx, eth->h_dest,
+					    ctx->ingress_ifindex, 0);
 	if (ret < 0)
 		/* In cases of flooding, XDP_PASS will be returned here */
 		return XDP_PASS;
