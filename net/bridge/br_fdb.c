@@ -241,6 +241,7 @@ __br_fdb_find_port(const struct net_device *br_dev,
 		   __u16 vid, bool ts_update)
 {
 	struct net_bridge_fdb_entry *f;
+	struct net_bridge_port *dst;
 	struct net_bridge *br;
 
 	if (!netif_is_bridge_master(br_dev))
@@ -248,13 +249,18 @@ __br_fdb_find_port(const struct net_device *br_dev,
 
 	br = netdev_priv(br_dev);
 	f = br_fdb_find_rcu(br, addr, vid);
+	dst = f ? f->dst : NULL;
 
-	if (f && f->dst) {
+	if (dst) {
 		if (ts_update) {
-			f->updated = jiffies;
-			f->used = f->updated;
+			unsigned long now = jiffies;
+
+			if (now != f->used)
+				f->used = now;
+			if ((dst->flags & BR_LEARNING) && now != f->updated)
+				f->updated = now;
 		}
-		return f->dst->dev;
+		return dst->dev;
 	}
 	return NULL;
 }
@@ -276,38 +282,29 @@ struct net_device *br_fdb_find_port(const struct net_device *br_dev,
 EXPORT_SYMBOL_GPL(br_fdb_find_port);
 
 int br_fdb_find_port_from_ifindex(struct xdp_md *xdp_ctx,
-				  struct bpf_fdb_lookup *opt,
-				  u32 opt__sz)
+				  const unsigned char *addr,
+				  u32 ifindex, u16 vid)
 {
 	struct xdp_buff *ctx = (struct xdp_buff *)xdp_ctx;
 	struct net_bridge_port *port;
 	struct net_device *dev;
-	int ret = -ENODEV;
 
-	BUILD_BUG_ON(sizeof(struct bpf_fdb_lookup) != NF_BPF_FDB_OPTS_SZ);
-	if (!opt || opt__sz != sizeof(struct bpf_fdb_lookup))
+	if (!addr)
 		return -ENODEV;
 
-	rcu_read_lock();
-
-	dev = dev_get_by_index_rcu(dev_net(ctx->rxq->dev), opt->ifindex);
+	dev = dev_get_by_index_rcu(dev_net(ctx->rxq->dev), ifindex);
 	if (!dev)
-		goto out;
-
-	if (unlikely(!netif_is_bridge_port(dev)))
-		goto out;
+		return -ENODEV;
 
 	port = br_port_get_check_rcu(dev);
 	if (unlikely(!port || !port->br))
-		goto out;
+		return -ENODEV;
 
-	dev = __br_fdb_find_port(port->br->dev, opt->addr, opt->vid, true);
-	if (dev)
-		ret = dev->ifindex;
-out:
-	rcu_read_unlock();
+	dev = __br_fdb_find_port(port->br->dev, addr, vid, true);
+	if (!dev)
+		return -ENODEV;
 
-	return ret;
+	return dev->ifindex;
 }
 
 struct net_bridge_fdb_entry *br_fdb_find_rcu(struct net_bridge *br,
