@@ -66,6 +66,19 @@ struct {
 	__uint(max_entries, 100);
 } tx_port SEC(".maps");
 
+
+struct nf_conn;
+struct bpf_ct_opts___local {
+	s32 netns_id;
+	s32 error;
+	u8 l4proto;
+	u8 reserved[3];
+} __attribute__((preserve_access_index));
+
+struct nf_conn *bpf_xdp_ct_lookup(struct xdp_md *, struct bpf_sock_tuple *, u32,
+				  struct bpf_ct_opts___local *, u32) __ksym;
+void bpf_ct_release(struct nf_conn *) __ksym;
+
 SEC("xdp")
 int xdp_router_ipv4_prog(struct xdp_md *ctx)
 {
@@ -153,6 +166,41 @@ int xdp_router_ipv4_prog(struct xdp_md *ctx)
 			}
 			dst_ifindex = prefix_value->ifindex;
 		}
+
+		/* connection tracking for TCP/UDP */
+		if (iph->protocol == IPPROTO_TCP) {
+			struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
+			struct bpf_ct_opts___local opts_def = {
+				.l4proto = IPPROTO_TCP,
+				.netns_id = -1,
+			};
+			struct bpf_sock_tuple bpf_tuple = {};
+			struct nf_conn *ct;
+
+			if (tcph + 1 > data_end)
+				return XDP_DROP;
+
+			bpf_tuple.ipv4.saddr = iph->saddr;
+			bpf_tuple.ipv4.daddr = iph->daddr;
+			bpf_tuple.ipv4.sport = tcph->source;
+			bpf_tuple.ipv4.dport = tcph->dest;
+
+			ct = bpf_xdp_ct_lookup(ctx, &bpf_tuple,
+					       sizeof(bpf_tuple.ipv4),
+					       &opts_def, sizeof(opts_def));
+			if (ct) {
+				const char fmt_str[] = "%x->%x\n";
+				struct nf_conntrack_tuple *tuple;
+
+				tuple = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
+				bpf_trace_printk(fmt_str, sizeof(fmt_str),
+						 tuple->src.u3.ip, tuple->dst.u3.ip);
+				bpf_ct_release(ct);
+			}
+		}
+
+		/* FIXME */
+		return XDP_PASS;
 	}
 
 	if (!src_mac || !dest_mac) {
