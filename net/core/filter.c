@@ -4270,9 +4270,11 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 	 * not all XDP capable drivers can map non-linear xdp_frame in
 	 * ndo_xdp_xmit.
 	 */
+#if 0
 	if (unlikely(xdp_buff_has_frags(xdp) &&
 		     map_type != BPF_MAP_TYPE_CPUMAP))
 		return -EOPNOTSUPP;
+#endif
 
 	if (map_type == BPF_MAP_TYPE_XSKMAP)
 		return __xdp_do_redirect_xsk(ri, dev, xdp, xdp_prog);
