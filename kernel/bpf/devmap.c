@@ -59,6 +59,8 @@ struct xdp_dev_bulk_queue {
 	struct net_device *dev_rx;
 	struct bpf_prog *xdp_prog;
 	unsigned int count;
+	struct list_head skb_list; /* generic xdp bulking */
+	unsigned int skb_count;
 };
 
 struct bpf_dtab_netdev {
@@ -484,28 +486,31 @@ static inline int __xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
 	return 0;
 }
 
-static u32 dev_map_bpf_prog_run_skb(struct sk_buff *skb, struct bpf_dtab_netdev *dst)
+static u32 dev_map_bpf_prog_run_skb(struct sk_buff *skb,
+				    struct xdp_dev_bulk_queue *bq)
 {
-	struct xdp_txq_info txq = { .dev = dst->dev };
+	struct xdp_txq_info txq = {
+		.dev = bq->dev
+	};
 	struct xdp_buff xdp;
 	u32 act;
 
-	if (!dst->xdp_prog)
+	if (!bq->xdp_prog)
 		return XDP_PASS;
 
 	__skb_pull(skb, skb->mac_len);
 	xdp.txq = &txq;
 
-	act = bpf_prog_run_generic_xdp(skb, &xdp, dst->xdp_prog);
+	act = bpf_prog_run_generic_xdp(skb, &xdp, bq->xdp_prog);
 	switch (act) {
 	case XDP_PASS:
 		__skb_push(skb, skb->mac_len);
 		break;
 	default:
-		bpf_warn_invalid_xdp_action(NULL, dst->xdp_prog, act);
+		bpf_warn_invalid_xdp_action(NULL, bq->xdp_prog, act);
 		fallthrough;
 	case XDP_ABORTED:
-		trace_xdp_exception(dst->dev, dst->xdp_prog, act);
+		trace_xdp_exception(bq->dev, bq->xdp_prog, act);
 		fallthrough;
 	case XDP_DROP:
 		kfree_skb(skb);
@@ -655,24 +660,49 @@ int dev_map_enqueue_multi(struct xdp_frame *xdpf, struct net_device *dev_rx,
 	return 0;
 }
 
+static void bq_generic_xmit_all(struct xdp_dev_bulk_queue *bq)
+{
+	struct sk_buff *skb, *tmp;
+	LIST_HEAD(tx_list);
+
+	if (unlikely(!bq->skb_count))
+		return;
+
+	list_for_each_entry_safe(skb, tmp, &bq->skb_list, list) {
+		skb_list_del_init(skb);
+		/* Redirect has already succeeded semantically at this point,
+		 * so we just return 0 even if packet is dropped.
+		 * Helper below takes care of freeing skb.
+		 */
+		if (dev_map_bpf_prog_run_skb(skb, bq) == XDP_PASS) {
+			list_add_tail(&skb->list, &tx_list);
+			skb->dev = bq->dev;
+		}
+	}
+	INIT_LIST_HEAD(&bq->skb_list);
+	bq->skb_count = 0;
+
+	list_for_each_entry_safe(skb, tmp, &tx_list, list) {
+		skb_list_del_init(skb);
+		generic_xdp_tx(skb, bq->xdp_prog);
+	}
+}
+
 int dev_map_generic_redirect(struct bpf_dtab_netdev *dst, struct sk_buff *skb,
 			     struct bpf_prog *xdp_prog)
 {
+	struct xdp_dev_bulk_queue *bq = this_cpu_ptr(dst->dev->xdp_bulkq);
 	int err;
 
 	err = xdp_ok_fwd_dev(dst->dev, skb->len);
 	if (unlikely(err))
 		return err;
 
-	/* Redirect has already succeeded semantically at this point, so we just
-	 * return 0 even if packet is dropped. Helper below takes care of
-	 * freeing skb.
-	 */
-	if (dev_map_bpf_prog_run_skb(skb, dst) != XDP_PASS)
-		return 0;
+	if (unlikely(bq->skb_count == DEV_MAP_BULK_SIZE))
+		bq_generic_xmit_all(bq);
 
-	skb->dev = dst->dev;
-	generic_xdp_tx(skb, xdp_prog);
+	list_add_tail(&skb->list, &bq->skb_list);
+	bq->skb_count++;
 
 	return 0;
 }
@@ -1078,8 +1108,13 @@ static int dev_map_notification(struct notifier_block *notifier,
 		if (!netdev->xdp_bulkq)
 			return NOTIFY_BAD;
 
-		for_each_possible_cpu(cpu)
-			per_cpu_ptr(netdev->xdp_bulkq, cpu)->dev = netdev;
+		for_each_possible_cpu(cpu) {
+			struct xdp_dev_bulk_queue *bq;
+
+			bq = per_cpu_ptr(netdev->xdp_bulkq, cpu);
+			INIT_LIST_HEAD(&bq->skb_list);
+			bq->dev = netdev;
+		}
 		break;
 	case NETDEV_UNREGISTER:
 		/* This rcu_read_lock/unlock pair is needed because
