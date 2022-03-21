@@ -672,12 +672,13 @@ static bool netsec_clean_tx_dring(struct netsec_priv *priv)
 			bytes += desc->skb->len;
 			dev_kfree_skb(desc->skb);
 		} else {
-			bytes += desc->xdpf->len;
+			bytes += xdp_get_frame_len(desc->xdpf);
 			if (desc->buf_type == TYPE_NETSEC_XDP_TX)
 				xdp_return_frame_rx_napi(desc->xdpf);
 			else
 				xdp_return_frame_bulk(desc->xdpf, &bq);
 		}
+		cnt++;
 next:
 		/* clean up so netsec_uninit_pkt_dring() won't free the skb
 		 * again
@@ -693,7 +694,6 @@ next:
 
 		tail = dring->tail;
 		entry = dring->vaddr + DESC_SZ * tail;
-		cnt++;
 	}
 	xdp_flush_frame_bulk(&bq);
 
@@ -701,18 +701,17 @@ next:
 
 	spin_unlock(&dring->lock);
 
-	if (!cnt)
-		return false;
-
 	/* reading the register clears the irq */
 	netsec_read(priv, NETSEC_REG_NRM_TX_DONE_PKTCNT);
 
-	priv->ndev->stats.tx_packets += cnt;
-	priv->ndev->stats.tx_bytes += bytes;
+	if (cnt) {
+		priv->ndev->stats.tx_packets += cnt;
+		priv->ndev->stats.tx_bytes += bytes;
 
-	netdev_completed_queue(priv->ndev, cnt, bytes);
+		netdev_completed_queue(priv->ndev, cnt, bytes);
+	}
 
-	return true;
+	return !!cnt;
 }
 
 static void netsec_process_tx(struct netsec_priv *priv)
