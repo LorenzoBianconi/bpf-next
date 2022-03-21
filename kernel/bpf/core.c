@@ -829,6 +829,7 @@ struct bpf_prog_pack {
 #define BPF_PROG_SIZE_TO_NBITS(size)	(round_up(size, BPF_PROG_CHUNK_SIZE) / BPF_PROG_CHUNK_SIZE)
 
 static size_t bpf_prog_pack_size = -1;
+static size_t bpf_prog_pack_mask = -1;
 
 static int bpf_prog_chunk_count(void)
 {
@@ -839,19 +840,34 @@ static int bpf_prog_chunk_count(void)
 static DEFINE_MUTEX(pack_mutex);
 static LIST_HEAD(pack_list);
 
+/* PMD_SIZE is not available in some special config, e.g. ARCH=arm with
+ * CONFIG_MMU=n. Use PAGE_SIZE in these cases.
+ */
+#ifdef PMD_SIZE
+#define BPF_HPAGE_SIZE PMD_SIZE
+#define BPF_HPAGE_MASK PMD_MASK
+#else
+#define BPF_HPAGE_SIZE PAGE_SIZE
+#define BPF_HPAGE_MASK PAGE_MASK
+#endif
+
 static size_t select_bpf_prog_pack_size(void)
 {
 	size_t size;
 	void *ptr;
 
-	size = PMD_SIZE * num_online_nodes();
+	size = BPF_HPAGE_SIZE * num_online_nodes();
 	ptr = module_alloc(size);
 
 	/* Test whether we can get huge pages. If not just use PAGE_SIZE
 	 * packs.
 	 */
-	if (!ptr || !is_vm_area_hugepages(ptr))
+	if (!ptr || !is_vm_area_hugepages(ptr)) {
 		size = PAGE_SIZE;
+		bpf_prog_pack_mask = PAGE_MASK;
+	} else {
+		bpf_prog_pack_mask = BPF_HPAGE_MASK;
+	}
 
 	vfree(ptr);
 	return size;
@@ -935,7 +951,7 @@ static void bpf_prog_pack_free(struct bpf_binary_header *hdr)
 		goto out;
 	}
 
-	pack_ptr = (void *)((unsigned long)hdr & ~(bpf_prog_pack_size - 1));
+	pack_ptr = (void *)((unsigned long)hdr & bpf_prog_pack_mask);
 
 	list_for_each_entry(tmp, &pack_list, list) {
 		if (tmp->ptr == pack_ptr) {
