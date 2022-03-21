@@ -789,7 +789,8 @@ static void netsec_finalize_xdp_rx(struct netsec_priv *priv, u32 xdp_res,
 static void netsec_set_tx_de(struct netsec_priv *priv,
 			     struct netsec_desc_ring *dring,
 			     const struct netsec_tx_pkt_ctrl *tx_ctrl,
-			     const struct netsec_desc *desc, void *buf)
+			     const struct netsec_desc *desc,
+			     void *buf, bool last)
 {
 	int idx = dring->head;
 	struct netsec_de *de;
@@ -801,12 +802,13 @@ static void netsec_set_tx_de(struct netsec_priv *priv,
 	       (1 << NETSEC_TX_SHIFT_PT_FIELD) |
 	       (NETSEC_RING_GMAC << NETSEC_TX_SHIFT_TDRID_FIELD) |
 	       (1 << NETSEC_TX_SHIFT_FS_FIELD) |
-	       (1 << NETSEC_TX_LAST) |
 	       (tx_ctrl->cksum_offload_flag << NETSEC_TX_SHIFT_CO) |
 	       (tx_ctrl->tcp_seg_offload_flag << NETSEC_TX_SHIFT_SO) |
 	       (1 << NETSEC_TX_SHIFT_TRS_FIELD);
 	if (idx == DESC_NUM - 1)
 		attr |= (1 << NETSEC_TX_SHIFT_LD_FIELD);
+	if (last)
+		attr |= (1 << NETSEC_TX_LAST);
 
 	de->data_buf_addr_up = upper_32_bits(desc->dma_addr);
 	de->data_buf_addr_lw = lower_32_bits(desc->dma_addr);
@@ -818,7 +820,7 @@ static void netsec_set_tx_de(struct netsec_priv *priv,
 		dring->desc[idx].skb = buf;
 	else if (desc->buf_type == TYPE_NETSEC_XDP_TX ||
 		 desc->buf_type == TYPE_NETSEC_XDP_NDO)
-		dring->desc[idx].xdpf = buf;
+		dring->desc[idx].xdpf = last ? buf : NULL;
 
 	/* move head ahead */
 	dring->head = (dring->head + 1) % DESC_NUM;
@@ -874,7 +876,7 @@ static u32 netsec_xdp_queue_one(struct netsec_priv *priv,
 	tx_desc.len = xdpf->len;
 
 	netdev_sent_queue(priv->ndev, xdpf->len);
-	netsec_set_tx_de(priv, tx_ring, &tx_ctrl, &tx_desc, xdpf);
+	netsec_set_tx_de(priv, tx_ring, &tx_ctrl, &tx_desc, xdpf, true);
 
 	return NETSEC_XDP_TX;
 }
@@ -1189,7 +1191,7 @@ static netdev_tx_t netsec_netdev_start_xmit(struct sk_buff *skb,
 	skb_tx_timestamp(skb);
 	netdev_sent_queue(priv->ndev, skb->len);
 
-	netsec_set_tx_de(priv, dring, &tx_ctrl, &tx_desc, skb);
+	netsec_set_tx_de(priv, dring, &tx_ctrl, &tx_desc, skb, true);
 	spin_unlock_bh(&dring->lock);
 	netsec_write(priv, NETSEC_REG_NRM_TX_PKTCNT, 1); /* submit another tx */
 
