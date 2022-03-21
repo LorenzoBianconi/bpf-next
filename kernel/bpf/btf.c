@@ -525,6 +525,50 @@ s32 btf_find_by_name_kind(const struct btf *btf, const char *name, u8 kind)
 	return -ENOENT;
 }
 
+static s32 bpf_find_btf_id(const char *name, u32 kind, struct btf **btf_p)
+{
+	struct btf *btf;
+	s32 ret;
+	int id;
+
+	btf = bpf_get_btf_vmlinux();
+	if (IS_ERR(btf))
+		return PTR_ERR(btf);
+	if (!btf)
+		return -EINVAL;
+
+	ret = btf_find_by_name_kind(btf, name, kind);
+	/* ret is never zero, since btf_find_by_name_kind returns
+	 * positive btf_id or negative error.
+	 */
+	if (ret > 0) {
+		btf_get(btf);
+		*btf_p = btf;
+		return ret;
+	}
+
+	/* If name is not found in vmlinux's BTF then search in module's BTFs */
+	spin_lock_bh(&btf_idr_lock);
+	idr_for_each_entry(&btf_idr, btf, id) {
+		if (!btf_is_module(btf))
+			continue;
+		/* linear search could be slow hence unlock/lock
+		 * the IDR to avoiding holding it for too long
+		 */
+		btf_get(btf);
+		spin_unlock_bh(&btf_idr_lock);
+		ret = btf_find_by_name_kind(btf, name, kind);
+		if (ret > 0) {
+			*btf_p = btf;
+			return ret;
+		}
+		spin_lock_bh(&btf_idr_lock);
+		btf_put(btf);
+	}
+	spin_unlock_bh(&btf_idr_lock);
+	return ret;
+}
+
 const struct btf_type *btf_type_skip_modifiers(const struct btf *btf,
 					       u32 id, u32 *res_id)
 {
@@ -6530,20 +6574,23 @@ struct module *btf_try_get_module(const struct btf *btf)
 	return res;
 }
 
-/* Returns struct btf corresponding to the struct module
- *
- * This function can return NULL or ERR_PTR. Note that caller must
- * release reference for struct btf iff btf_is_module is true.
+/* Returns struct btf corresponding to the struct module.
+ * This function can return NULL or ERR_PTR.
  */
 static struct btf *btf_get_module_btf(const struct module *module)
 {
-	struct btf *btf = NULL;
 #ifdef CONFIG_DEBUG_INFO_BTF_MODULES
 	struct btf_module *btf_mod, *tmp;
 #endif
+	struct btf *btf = NULL;
 
-	if (!module)
-		return bpf_get_btf_vmlinux();
+	if (!module) {
+		btf = bpf_get_btf_vmlinux();
+		if (!IS_ERR_OR_NULL(btf))
+			btf_get(btf);
+		return btf;
+	}
+
 #ifdef CONFIG_DEBUG_INFO_BTF_MODULES
 	mutex_lock(&btf_module_mutex);
 	list_for_each_entry_safe(btf_mod, tmp, &btf_modules, list) {
@@ -6562,7 +6609,8 @@ static struct btf *btf_get_module_btf(const struct module *module)
 
 BPF_CALL_4(bpf_btf_find_by_name_kind, char *, name, int, name_sz, u32, kind, int, flags)
 {
-	struct btf *btf;
+	struct btf *btf = NULL;
+	int btf_obj_fd = 0;
 	long ret;
 
 	if (flags)
@@ -6571,44 +6619,17 @@ BPF_CALL_4(bpf_btf_find_by_name_kind, char *, name, int, name_sz, u32, kind, int
 	if (name_sz <= 1 || name[name_sz - 1])
 		return -EINVAL;
 
-	btf = bpf_get_btf_vmlinux();
-	if (IS_ERR(btf))
-		return PTR_ERR(btf);
-
-	ret = btf_find_by_name_kind(btf, name, kind);
-	/* ret is never zero, since btf_find_by_name_kind returns
-	 * positive btf_id or negative error.
-	 */
-	if (ret < 0) {
-		struct btf *mod_btf;
-		int id;
-
-		/* If name is not found in vmlinux's BTF then search in module's BTFs */
-		spin_lock_bh(&btf_idr_lock);
-		idr_for_each_entry(&btf_idr, mod_btf, id) {
-			if (!btf_is_module(mod_btf))
-				continue;
-			/* linear search could be slow hence unlock/lock
-			 * the IDR to avoiding holding it for too long
-			 */
-			btf_get(mod_btf);
-			spin_unlock_bh(&btf_idr_lock);
-			ret = btf_find_by_name_kind(mod_btf, name, kind);
-			if (ret > 0) {
-				int btf_obj_fd;
-
-				btf_obj_fd = __btf_new_fd(mod_btf);
-				if (btf_obj_fd < 0) {
-					btf_put(mod_btf);
-					return btf_obj_fd;
-				}
-				return ret | (((u64)btf_obj_fd) << 32);
-			}
-			spin_lock_bh(&btf_idr_lock);
-			btf_put(mod_btf);
+	ret = bpf_find_btf_id(name, kind, &btf);
+	if (ret > 0 && btf_is_module(btf)) {
+		btf_obj_fd = __btf_new_fd(btf);
+		if (btf_obj_fd < 0) {
+			btf_put(btf);
+			return btf_obj_fd;
 		}
-		spin_unlock_bh(&btf_idr_lock);
+		return ret | (((u64)btf_obj_fd) << 32);
 	}
+	if (ret > 0)
+		btf_put(btf);
 	return ret;
 }
 
@@ -6807,9 +6828,7 @@ int register_btf_kfunc_id_set(enum bpf_prog_type prog_type,
 
 	hook = bpf_prog_type_to_kfunc_hook(prog_type);
 	ret = btf_populate_kfunc_set(btf, hook, kset);
-	/* reference is only taken for module BTF */
-	if (btf_is_module(btf))
-		btf_put(btf);
+	btf_put(btf);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(register_btf_kfunc_id_set);
@@ -7163,6 +7182,8 @@ bpf_core_find_cands(struct bpf_core_ctx *ctx, u32 local_type_id)
 	main_btf = bpf_get_btf_vmlinux();
 	if (IS_ERR(main_btf))
 		return ERR_CAST(main_btf);
+	if (!main_btf)
+		return ERR_PTR(-EINVAL);
 
 	local_type = btf_type_by_id(local_btf, local_type_id);
 	if (!local_type)
