@@ -25,8 +25,10 @@ enum mt7915_eeprom_field {
 	MT_EE_TX0_POWER_5G =	0x34b,
 	MT_EE_RATE_DELTA_2G_V2 = 0x7d3,
 	MT_EE_RATE_DELTA_5G_V2 = 0x81e,
+	MT_EE_RATE_DELTA_6G_V2 = 0x884, /* 6g fields only appear in eeprom v2 */
 	MT_EE_TX0_POWER_2G_V2 =	0x441,
 	MT_EE_TX0_POWER_5G_V2 =	0x445,
+	MT_EE_TX0_POWER_6G_V2 =	0x465,
 	MT_EE_ADIE_FT_VERSION =	0x9a0,
 
 	__MT_EE_MAX =		0xe00,
@@ -56,11 +58,31 @@ enum mt7915_eeprom_field {
 #define MT_EE_RATE_DELTA_SIGN			BIT(6)
 #define MT_EE_RATE_DELTA_EN			BIT(7)
 
+#define MT_EE_NSS_MAX_MA7915			4
+#define MT_EE_NSS_MAX_DBDC_MA7915		2
+#define MT_EE_NSS_MAX_MA7986			4
+#define MT_EE_NSS_MAX_DBDC_MA7986		4
+
+enum mt7915_adie_sku {
+	MT7976_ONE_ADIE_DBDC = 0x7,
+	MT7975_ONE_ADIE	= 0x8,
+	MT7976_ONE_ADIE	= 0xa,
+	MT7975_DUAL_ADIE = 0xd,
+	MT7976_DUAL_ADIE = 0xf,
+};
+
 enum mt7915_eeprom_band {
 	MT_EE_BAND_SEL_DEFAULT,
 	MT_EE_BAND_SEL_5GHZ,
 	MT_EE_BAND_SEL_2GHZ,
 	MT_EE_BAND_SEL_DUAL,
+};
+
+enum {
+	MT_EE_V2_BAND_SEL_2GHZ,
+	MT_EE_V2_BAND_SEL_5GHZ,
+	MT_EE_V2_BAND_SEL_6GHZ,
+	MT_EE_V2_BAND_SEL_5GHZ_6GHZ,
 };
 
 enum mt7915_sku_rate_group {
@@ -83,8 +105,20 @@ enum mt7915_sku_rate_group {
 };
 
 static inline int
-mt7915_get_channel_group(int channel)
+mt7915_get_channel_group_5g(int channel, bool is_7976)
 {
+	if (is_7976) {
+		if (channel <= 64)
+			return 0;
+		if (channel <= 96)
+			return 1;
+		if (channel <= 128)
+			return 2;
+		if (channel <= 144)
+			return 3;
+		return 4;
+	}
+
 	if (channel >= 184 && channel <= 196)
 		return 0;
 	if (channel <= 48)
@@ -100,6 +134,15 @@ mt7915_get_channel_group(int channel)
 	if (channel <= 144)
 		return 6;
 	return 7;
+}
+
+static inline int
+mt7915_get_channel_group_6g(int channel)
+{
+	if (channel <= 29)
+		return 0;
+
+	return DIV_ROUND_UP(channel - 29, 32);
 }
 
 static inline bool

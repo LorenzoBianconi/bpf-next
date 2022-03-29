@@ -560,6 +560,7 @@ static int prestera_switch_set_base_mac_addr(struct prestera_switch *sw)
 		dev_info(prestera_dev(sw), "using random base mac address\n");
 	}
 	of_node_put(base_mac_np);
+	of_node_put(np);
 
 	return prestera_hw_switch_mac_set(sw, sw->base_mac);
 }
@@ -1031,8 +1032,10 @@ static int __init prestera_module_init(void)
 		return -ENOMEM;
 
 	prestera_owq = alloc_ordered_workqueue("prestera_ordered", 0);
-	if (!prestera_owq)
+	if (!prestera_owq) {
+		destroy_workqueue(prestera_wq);
 		return -ENOMEM;
+	}
 
 	return 0;
 }

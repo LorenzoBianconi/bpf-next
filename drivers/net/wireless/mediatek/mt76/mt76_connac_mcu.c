@@ -899,24 +899,33 @@ EXPORT_SYMBOL_GPL(mt76_connac_mcu_wtbl_smps_tlv);
 
 void mt76_connac_mcu_wtbl_ht_tlv(struct mt76_dev *dev, struct sk_buff *skb,
 				 struct ieee80211_sta *sta, void *sta_wtbl,
-				 void *wtbl_tlv, bool ldpc)
+				 void *wtbl_tlv, bool ht_ldpc, bool vht_ldpc)
 {
 	struct wtbl_ht *ht = NULL;
 	struct tlv *tlv;
 	u32 flags = 0;
 
-	if (sta->ht_cap.ht_supported) {
+	if (sta->ht_cap.ht_supported || sta->he_6ghz_capa.capa) {
 		tlv = mt76_connac_mcu_add_nested_tlv(skb, WTBL_HT, sizeof(*ht),
 						     wtbl_tlv, sta_wtbl);
 		ht = (struct wtbl_ht *)tlv;
-		ht->ldpc = ldpc &&
+		ht->ldpc = ht_ldpc &&
 			   !!(sta->ht_cap.cap & IEEE80211_HT_CAP_LDPC_CODING);
-		ht->af = sta->ht_cap.ampdu_factor;
-		ht->mm = sta->ht_cap.ampdu_density;
+
+		if (sta->ht_cap.ht_supported) {
+			ht->af = sta->ht_cap.ampdu_factor;
+			ht->mm = sta->ht_cap.ampdu_density;
+		} else {
+			ht->af = le16_get_bits(sta->he_6ghz_capa.capa,
+					       IEEE80211_HE_6GHZ_CAP_MAX_AMPDU_LEN_EXP);
+			ht->mm = le16_get_bits(sta->he_6ghz_capa.capa,
+					       IEEE80211_HE_6GHZ_CAP_MIN_MPDU_START);
+		}
+
 		ht->ht = true;
 	}
 
-	if (sta->vht_cap.vht_supported) {
+	if (sta->vht_cap.vht_supported || sta->he_6ghz_capa.capa) {
 		struct wtbl_vht *vht;
 		u8 af;
 
@@ -924,7 +933,7 @@ void mt76_connac_mcu_wtbl_ht_tlv(struct mt76_dev *dev, struct sk_buff *skb,
 						     sizeof(*vht), wtbl_tlv,
 						     sta_wtbl);
 		vht = (struct wtbl_vht *)tlv;
-		vht->ldpc = ldpc &&
+		vht->ldpc = vht_ldpc &&
 			    !!(sta->vht_cap.cap & IEEE80211_VHT_CAP_RXLDPC);
 		vht->vht = true;
 
@@ -1004,7 +1013,8 @@ int mt76_connac_mcu_sta_cmd(struct mt76_phy *phy,
 						   sta_wtbl, wtbl_hdr);
 		if (info->sta)
 			mt76_connac_mcu_wtbl_ht_tlv(dev, skb, info->sta,
-						    sta_wtbl, wtbl_hdr, true);
+						    sta_wtbl, wtbl_hdr,
+						    true, true);
 	}
 
 	return mt76_mcu_skb_send_msg(dev, skb, info->cmd, true);
@@ -1044,7 +1054,7 @@ void mt76_connac_mcu_wtbl_ba_tlv(struct mt76_dev *dev, struct sk_buff *skb,
 	}
 
 	if (enable && tx) {
-		u8 ba_range[] = { 4, 8, 12, 24, 36, 48, 54, 64 };
+		static const u8 ba_range[] = { 4, 8, 12, 24, 36, 48, 54, 64 };
 		int i;
 
 		for (i = 7; i > 0; i--) {
@@ -1241,7 +1251,7 @@ u8 mt76_connac_get_phy_mode(struct mt76_phy *phy, struct ieee80211_vif *vif,
 
 		if (he_cap && he_cap->has_he)
 			mode |= PHY_MODE_AX_24G;
-	} else if (band == NL80211_BAND_5GHZ || band == NL80211_BAND_6GHZ) {
+	} else if (band == NL80211_BAND_5GHZ) {
 		mode |= PHY_MODE_A;
 
 		if (ht_cap->ht_supported)
@@ -1250,8 +1260,11 @@ u8 mt76_connac_get_phy_mode(struct mt76_phy *phy, struct ieee80211_vif *vif,
 		if (vht_cap->vht_supported)
 			mode |= PHY_MODE_AC;
 
-		if (he_cap && he_cap->has_he && band == NL80211_BAND_5GHZ)
+		if (he_cap && he_cap->has_he)
 			mode |= PHY_MODE_AX_5G;
+	} else if (band == NL80211_BAND_6GHZ) {
+		mode |= PHY_MODE_A | PHY_MODE_AN |
+			PHY_MODE_AC | PHY_MODE_AX_5G;
 	}
 
 	return mode;
@@ -1501,7 +1514,6 @@ int mt76_connac_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
 	int ext_channels_num = max_t(int, sreq->n_channels - 32, 0);
 	struct ieee80211_channel **scan_list = sreq->channels;
 	struct mt76_dev *mdev = phy->dev;
-	bool ext_phy = phy == mdev->phy2;
 	struct mt76_connac_mcu_scan_channel *chan;
 	struct mt76_connac_hw_scan_req *req;
 	struct sk_buff *skb;
@@ -1515,7 +1527,7 @@ int mt76_connac_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
 
 	req = (struct mt76_connac_hw_scan_req *)skb_put(skb, sizeof(*req));
 
-	req->seq_num = mvif->scan_seq_num | ext_phy << 7;
+	req->seq_num = mvif->scan_seq_num | mvif->band_idx << 7;
 	req->bss_idx = mvif->idx;
 	req->scan_type = sreq->n_ssids ? 1 : 0;
 	req->probe_req_num = sreq->n_ssids ? 2 : 0;
@@ -1623,7 +1635,6 @@ int mt76_connac_mcu_sched_scan_req(struct mt76_phy *phy,
 	struct mt76_connac_mcu_scan_channel *chan;
 	struct mt76_connac_sched_scan_req *req;
 	struct mt76_dev *mdev = phy->dev;
-	bool ext_phy = phy == mdev->phy2;
 	struct cfg80211_match_set *match;
 	struct cfg80211_ssid *ssid;
 	struct sk_buff *skb;
@@ -1637,7 +1648,7 @@ int mt76_connac_mcu_sched_scan_req(struct mt76_phy *phy,
 
 	req = (struct mt76_connac_sched_scan_req *)skb_put(skb, sizeof(*req));
 	req->version = 1;
-	req->seq_num = mvif->scan_seq_num | ext_phy << 7;
+	req->seq_num = mvif->scan_seq_num | mvif->band_idx << 7;
 
 	if (sreq->flags & NL80211_SCAN_FLAG_RANDOM_ADDR) {
 		u8 *addr = is_mt7663(phy->dev) ? req->mt7663.random_mac
@@ -2656,7 +2667,7 @@ EXPORT_SYMBOL_GPL(mt76_connac_mcu_bss_ext_tlv);
 int mt76_connac_mcu_bss_basic_tlv(struct sk_buff *skb,
 				  struct ieee80211_vif *vif,
 				  struct ieee80211_sta *sta,
-				  struct mt76_phy *phy, u8 wlan_idx,
+				  struct mt76_phy *phy, u16 wlan_idx,
 				  bool enable)
 {
 	struct mt76_vif *mvif = (struct mt76_vif *)vif->drv_priv;
@@ -2664,10 +2675,24 @@ int mt76_connac_mcu_bss_basic_tlv(struct sk_buff *skb,
 	struct bss_info_basic *bss;
 	struct tlv *tlv;
 
+	tlv = mt76_connac_mcu_add_tlv(skb, BSS_INFO_BASIC, sizeof(*bss));
+	bss = (struct bss_info_basic *)tlv;
+
 	switch (vif->type) {
 	case NL80211_IFTYPE_MESH_POINT:
-	case NL80211_IFTYPE_AP:
 	case NL80211_IFTYPE_MONITOR:
+		break;
+	case NL80211_IFTYPE_AP:
+		if (ieee80211_hw_check(phy->hw, SUPPORTS_MULTI_BSSID)) {
+			u8 bssid_id = vif->bss_conf.bssid_indicator;
+			struct wiphy *wiphy = phy->hw->wiphy;
+
+			if (bssid_id > ilog2(wiphy->mbssid_max_interfaces))
+				return -EINVAL;
+
+			bss->non_tx_bssid = vif->bss_conf.bssid_index;
+			bss->max_bssid = bssid_id;
+		}
 		break;
 	case NL80211_IFTYPE_STATION:
 		if (enable) {
@@ -2693,9 +2718,6 @@ int mt76_connac_mcu_bss_basic_tlv(struct sk_buff *skb,
 		break;
 	}
 
-	tlv = mt76_connac_mcu_add_tlv(skb, BSS_INFO_BASIC, sizeof(*bss));
-
-	bss = (struct bss_info_basic *)tlv;
 	bss->network_type = cpu_to_le32(type);
 	bss->bmc_wcid_lo = to_wcid_lo(wlan_idx);
 	bss->bmc_wcid_hi = to_wcid_hi(wlan_idx);
