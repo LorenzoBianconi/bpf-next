@@ -150,6 +150,11 @@ int xdp_router_ipv4_prog(struct xdp_md *ctx)
 
 				dest_mac = bpf_map_lookup_elem(&arp_table,
 							       &prefix_value->gw);
+				if (!dest_mac) {
+					if (rec)
+						NO_TEAR_INC(rec->xdp_pass);
+					return XDP_PASS;
+				}
 			}
 		}
 
