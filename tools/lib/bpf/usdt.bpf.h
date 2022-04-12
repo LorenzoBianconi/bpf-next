@@ -103,7 +103,7 @@ int __bpf_usdt_spec_id(struct pt_regs *ctx)
 }
 
 /* Return number of USDT arguments defined for currently traced USDT. */
-static inline __noinline
+__weak __hidden
 int bpf_usdt_arg_cnt(struct pt_regs *ctx)
 {
 	struct __bpf_usdt_spec *spec;
@@ -124,7 +124,7 @@ int bpf_usdt_arg_cnt(struct pt_regs *ctx)
  * Returns 0 on success; negative error, otherwise.
  * On error *res is guaranteed to be set to zero.
  */
-static inline __noinline
+__weak __hidden
 int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 {
 	struct __bpf_usdt_spec *spec;
@@ -166,7 +166,7 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 	case BPF_USDT_ARG_REG_DEREF:
 		/* Arg is in memory addressed by register, plus some offset
 		 * (e.g., "-4@-1204(%rbp)" in USDT arg spec). Register is
-		 * identified lik with BPF_USDT_ARG_REG case, and the offset
+		 * identified like with BPF_USDT_ARG_REG case, and the offset
 		 * is in arg_spec->val_off. We first fetch register contents
 		 * from pt_regs, then do another user-space probe read to
 		 * fetch argument value itself.
@@ -177,6 +177,9 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 		err = bpf_probe_read_user(&val, sizeof(val), (void *)val + arg_spec->val_off);
 		if (err)
 			return err;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		val >>= arg_spec->arg_bitshift;
+#endif
 		break;
 	default:
 		return -EINVAL;
@@ -198,10 +201,10 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 /* Retrieve user-specified cookie value provided during attach as
  * bpf_usdt_opts.usdt_cookie. This serves the same purpose as BPF cookie
  * returned by bpf_get_attach_cookie(). Libbpf's support for USDT is itself
- * utilizaing BPF cookies internally, so user can't use BPF cookie directly
+ * utilizing BPF cookies internally, so user can't use BPF cookie directly
  * for USDT programs and has to use bpf_usdt_cookie() API instead.
  */
-static inline __noinline
+__weak __hidden
 long bpf_usdt_cookie(struct pt_regs *ctx)
 {
 	struct __bpf_usdt_spec *spec;

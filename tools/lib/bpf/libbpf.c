@@ -1401,8 +1401,11 @@ static int find_elf_var_offset(const struct bpf_object *obj, const char *name, _
 	for (si = 0; si < symbols->d_size / sizeof(Elf64_Sym); si++) {
 		Elf64_Sym *sym = elf_sym_by_idx(obj, si);
 
-		if (ELF64_ST_BIND(sym->st_info) != STB_GLOBAL ||
-		    ELF64_ST_TYPE(sym->st_info) != STT_OBJECT)
+		if (ELF64_ST_TYPE(sym->st_info) != STT_OBJECT)
+			continue;
+
+		if (ELF64_ST_BIND(sym->st_info) != STB_GLOBAL &&
+		    ELF64_ST_BIND(sym->st_info) != STB_WEAK)
 			continue;
 
 		sname = elf_sym_str(obj, sym->st_name);
@@ -4591,7 +4594,7 @@ static int probe_kern_probe_read_kernel(void)
 	};
 	int fd, insn_cnt = ARRAY_SIZE(insns);
 
-	fd = bpf_prog_load(BPF_PROG_TYPE_KPROBE, NULL, "GPL", insns, insn_cnt, NULL);
+	fd = bpf_prog_load(BPF_PROG_TYPE_TRACEPOINT, NULL, "GPL", insns, insn_cnt, NULL);
 	return probe_fd(fd);
 }
 
@@ -5684,10 +5687,17 @@ bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
 			insn_idx = rec->insn_off / BPF_INSN_SZ;
 			prog = find_prog_by_sec_insn(obj, sec_idx, insn_idx);
 			if (!prog) {
-				pr_warn("sec '%s': failed to find program at insn #%d for CO-RE offset relocation #%d\n",
-					sec_name, insn_idx, i);
-				err = -EINVAL;
-				goto out;
+				/* When __weak subprog is "overridden" by another instance
+				 * of the subprog from a different object file, linker still
+				 * appends all the .BTF.ext info that used to belong to that
+				 * eliminated subprogram.
+				 * This is similar to what x86-64 linker does for relocations.
+				 * So just ignore such relocations just like we ignore
+				 * subprog instructions when discovering subprograms.
+				 */
+				pr_debug("sec '%s': skipping CO-RE relocation #%d for insn #%d belonging to eliminated weak subprogram\n",
+					 sec_name, i, insn_idx);
+				continue;
 			}
 			/* no need to apply CO-RE relocation if the program is
 			 * not going to be loaded
@@ -10766,7 +10776,7 @@ static int resolve_full_path(const char *file, char *result, size_t result_sz)
 	const char *search_paths[3] = {};
 	int i;
 
-	if (strstr(file, ".so")) {
+	if (str_has_sfx(file, ".so") || strstr(file, ".so.")) {
 		search_paths[0] = getenv("LD_LIBRARY_PATH");
 		search_paths[1] = "/usr/lib64:/usr/lib";
 		search_paths[2] = arch_specific_lib_paths();
@@ -10913,60 +10923,45 @@ err_out:
 static int attach_uprobe(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
 	DECLARE_LIBBPF_OPTS(bpf_uprobe_opts, opts);
-	char *func, *probe_name, *func_end;
-	char *func_name, binary_path[512];
-	unsigned long long raw_offset;
-	size_t offset = 0;
-	int n;
+	char *probe_type = NULL, *binary_path = NULL, *func_name = NULL;
+	int n, ret = -EINVAL;
+	long offset = 0;
 
 	*link = NULL;
 
-	opts.retprobe = str_has_pfx(prog->sec_name, "uretprobe");
-	if (opts.retprobe)
-		probe_name = prog->sec_name + sizeof("uretprobe") - 1;
-	else
-		probe_name = prog->sec_name + sizeof("uprobe") - 1;
-	if (probe_name[0] == '/')
-		probe_name++;
-
-	/* handle SEC("u[ret]probe") - format is valid, but auto-attach is impossible. */
-	if (strlen(probe_name) == 0)
-		return 0;
-
-	snprintf(binary_path, sizeof(binary_path), "%s", probe_name);
-	/* ':' should be prior to function+offset */
-	func_name = strrchr(binary_path, ':');
-	if (!func_name) {
-		pr_warn("section '%s' missing ':function[+offset]' specification\n",
+	n = sscanf(prog->sec_name, "%m[^/]/%m[^:]:%m[a-zA-Z0-9_.]+%li",
+		   &probe_type, &binary_path, &func_name, &offset);
+	switch (n) {
+	case 1:
+		/* handle SEC("u[ret]probe") - format is valid, but auto-attach is impossible. */
+		ret = 0;
+		break;
+	case 2:
+		pr_warn("prog '%s': section '%s' missing ':function[+offset]' specification\n",
+			prog->name, prog->sec_name);
+		break;
+	case 3:
+	case 4:
+		opts.retprobe = strcmp(probe_type, "uretprobe") == 0;
+		if (opts.retprobe && offset != 0) {
+			pr_warn("prog '%s': uretprobes do not support offset specification\n",
+				prog->name);
+			break;
+		}
+		opts.func_name = func_name;
+		*link = bpf_program__attach_uprobe_opts(prog, -1, binary_path, offset, &opts);
+		ret = libbpf_get_error(*link);
+		break;
+	default:
+		pr_warn("prog '%s': invalid format of section definition '%s'\n", prog->name,
 			prog->sec_name);
-		return -EINVAL;
+		break;
 	}
-	func_name[0] = '\0';
-	func_name++;
-	n = sscanf(func_name, "%m[a-zA-Z0-9_.]+%li", &func, &offset);
-	if (n < 1) {
-		pr_warn("uprobe name '%s' is invalid\n", func_name);
-		return -EINVAL;
-	}
-	if (opts.retprobe && offset != 0) {
-		free(func);
-		pr_warn("uretprobes do not support offset specification\n");
-		return -EINVAL;
-	}
+	free(probe_type);
+	free(binary_path);
+	free(func_name);
 
-	/* Is func a raw address? */
-	errno = 0;
-	raw_offset = strtoull(func, &func_end, 0);
-	if (!errno && !*func_end) {
-		free(func);
-		func = NULL;
-		offset = (size_t)raw_offset;
-	}
-	opts.func_name = func;
-
-	*link = bpf_program__attach_uprobe_opts(prog, -1, binary_path, offset, &opts);
-	free(func);
-	return libbpf_get_error(*link);
+	return ret;
 }
 
 struct bpf_link *bpf_program__attach_uprobe(const struct bpf_program *prog,
