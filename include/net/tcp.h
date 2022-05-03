@@ -407,7 +407,7 @@ int tcp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval,
 		   unsigned int optlen);
 void tcp_set_keepalive(struct sock *sk, int val);
 void tcp_syn_ack_timeout(const struct request_sock *req);
-int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
+int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 		int flags, int *addr_len);
 int tcp_set_rcvlowat(struct sock *sk, int val);
 int tcp_set_window_clamp(struct sock *sk, int val);
@@ -1375,18 +1375,6 @@ static inline bool tcp_checksum_complete(struct sk_buff *skb)
 bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb,
 		     enum skb_drop_reason *reason);
 
-#ifdef CONFIG_INET
-void __sk_defer_free_flush(struct sock *sk);
-
-static inline void sk_defer_free_flush(struct sock *sk)
-{
-	if (llist_empty(&sk->defer_list))
-		return;
-	__sk_defer_free_flush(sk);
-}
-#else
-static inline void sk_defer_free_flush(struct sock *sk) {}
-#endif
 
 int tcp_filter(struct sock *sk, struct sk_buff *skb);
 void tcp_set_state(struct sock *sk, int state);
