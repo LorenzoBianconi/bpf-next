@@ -4943,6 +4943,42 @@ bpf_object__populate_internal_map(struct bpf_object *obj, struct bpf_map *map)
 
 static void bpf_map__destroy(struct bpf_map *map);
 
+static bool is_pow_of_2(size_t x)
+{
+	return x && (x & (x - 1));
+}
+
+static size_t adjust_ringbuf_sz(size_t sz)
+{
+	__u32 page_sz = sysconf(_SC_PAGE_SIZE);
+	__u32 mul;
+
+	/* if user forgot to set any size, make sure they see error */
+	if (sz == 0)
+		return 0;
+	/* Kernel expects BPF_MAP_TYPE_RINGBUF's max_entries to be
+	 * a power-of-2 multiple of kernel's page size. If user diligently
+	 * satisified these conditions, pass the size through.
+	 */
+	if ((sz % page_sz) == 0 && is_pow_of_2(sz / page_sz))
+		return sz;
+
+	/* Otherwise find closest (page_sz * power_of_2) product bigger than
+	 * user-set size to satisfy both user size request and kernel
+	 * requirements and substitute correct max_entries for map creation.
+	 */
+	for (mul = 1; mul <= UINT_MAX / page_sz; mul <<= 1) {
+		if (mul * page_sz > sz)
+			return mul * page_sz;
+	}
+
+	/* if it's impossible to satisfy the conditions (i.e., user size is
+	 * very close to UINT_MAX but is not a power-of-2 multiple of
+	 * page_size) then just return original size and let kernel reject it
+	 */
+	return sz;
+}
+
 static int bpf_object__create_map(struct bpf_object *obj, struct bpf_map *map, bool is_inner)
 {
 	LIBBPF_OPTS(bpf_map_create_opts, create_attr);
@@ -4981,6 +5017,9 @@ static int bpf_object__create_map(struct bpf_object *obj, struct bpf_map *map, b
 	}
 
 	switch (def->type) {
+	case BPF_MAP_TYPE_RINGBUF:
+		map->def.max_entries = adjust_ringbuf_sz(map->def.max_entries);
+		/* fallthrough */
 	case BPF_MAP_TYPE_PERF_EVENT_ARRAY:
 	case BPF_MAP_TYPE_CGROUP_ARRAY:
 	case BPF_MAP_TYPE_STACK_TRACE:
@@ -4994,7 +5033,6 @@ static int bpf_object__create_map(struct bpf_object *obj, struct bpf_map *map, b
 	case BPF_MAP_TYPE_SOCKHASH:
 	case BPF_MAP_TYPE_QUEUE:
 	case BPF_MAP_TYPE_STACK:
-	case BPF_MAP_TYPE_RINGBUF:
 		create_attr.btf_fd = 0;
 		create_attr.btf_key_type_id = 0;
 		create_attr.btf_value_type_id = 0;
@@ -6822,6 +6860,8 @@ static int bpf_object_load_prog_instance(struct bpf_object *obj, struct bpf_prog
 				prog->name, err);
 			return err;
 		}
+		insns = prog->insns;
+		insns_cnt = prog->insns_cnt;
 	}
 
 	if (obj->gen_loader) {
@@ -8748,6 +8788,26 @@ const struct bpf_insn *bpf_program__insns(const struct bpf_program *prog)
 size_t bpf_program__insn_cnt(const struct bpf_program *prog)
 {
 	return prog->insns_cnt;
+}
+
+int bpf_program__set_insns(struct bpf_program *prog,
+			   struct bpf_insn *new_insns, size_t new_insn_cnt)
+{
+	struct bpf_insn *insns;
+
+	if (prog->obj->loaded)
+		return -EBUSY;
+
+	insns = libbpf_reallocarray(prog->insns, new_insn_cnt, sizeof(*insns));
+	if (!insns) {
+		pr_warn("prog '%s': failed to realloc prog code\n", prog->name);
+		return -ENOMEM;
+	}
+	memcpy(insns, new_insns, new_insn_cnt * sizeof(*insns));
+
+	prog->insns = insns;
+	prog->insns_cnt = new_insn_cnt;
+	return 0;
 }
 
 int bpf_program__set_prep(struct bpf_program *prog, int nr_instances,
@@ -11528,11 +11588,16 @@ static int attach_raw_tp(const struct bpf_program *prog, long cookie, struct bpf
 }
 
 /* Common logic for all BPF program types that attach to a btf_id */
-static struct bpf_link *bpf_program__attach_btf_id(const struct bpf_program *prog)
+static struct bpf_link *bpf_program__attach_btf_id(const struct bpf_program *prog,
+						   const struct bpf_trace_opts *opts)
 {
+	LIBBPF_OPTS(bpf_link_create_opts, link_opts);
 	char errmsg[STRERR_BUFSIZE];
 	struct bpf_link *link;
 	int prog_fd, pfd;
+
+	if (!OPTS_VALID(opts, bpf_trace_opts))
+		return libbpf_err_ptr(-EINVAL);
 
 	prog_fd = bpf_program__fd(prog);
 	if (prog_fd < 0) {
@@ -11546,7 +11611,8 @@ static struct bpf_link *bpf_program__attach_btf_id(const struct bpf_program *pro
 	link->detach = &bpf_link__detach_fd;
 
 	/* libbpf is smart enough to redirect to BPF_RAW_TRACEPOINT_OPEN on old kernels */
-	pfd = bpf_link_create(prog_fd, 0, bpf_program__expected_attach_type(prog), NULL);
+	link_opts.tracing.cookie = OPTS_GET(opts, cookie, 0);
+	pfd = bpf_link_create(prog_fd, 0, bpf_program__expected_attach_type(prog), &link_opts);
 	if (pfd < 0) {
 		pfd = -errno;
 		free(link);
@@ -11560,12 +11626,18 @@ static struct bpf_link *bpf_program__attach_btf_id(const struct bpf_program *pro
 
 struct bpf_link *bpf_program__attach_trace(const struct bpf_program *prog)
 {
-	return bpf_program__attach_btf_id(prog);
+	return bpf_program__attach_btf_id(prog, NULL);
+}
+
+struct bpf_link *bpf_program__attach_trace_opts(const struct bpf_program *prog,
+						const struct bpf_trace_opts *opts)
+{
+	return bpf_program__attach_btf_id(prog, opts);
 }
 
 struct bpf_link *bpf_program__attach_lsm(const struct bpf_program *prog)
 {
-	return bpf_program__attach_btf_id(prog);
+	return bpf_program__attach_btf_id(prog, NULL);
 }
 
 static int attach_trace(const struct bpf_program *prog, long cookie, struct bpf_link **link)
