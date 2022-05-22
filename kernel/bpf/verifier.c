@@ -4360,6 +4360,11 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 	}
 
 	if (env->ops->btf_struct_access) {
+		if (atype != BPF_READ && reg->type & MEM_RDONLY) {
+			verbose(env, "pointer points to const object, only read is supported\n");
+			return -EACCES;
+		}
+
 		ret = env->ops->btf_struct_access(&env->log, reg->btf, t,
 						  off, size, atype, &btf_id, &flag);
 	} else {
@@ -7281,8 +7286,17 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		mark_reg_unknown(env, regs, BPF_REG_0);
 		mark_btf_func_reg_size(env, BPF_REG_0, t->size);
 	} else if (btf_type_is_ptr(t)) {
-		ptr_type = btf_type_skip_modifiers(desc_btf, t->type,
-						   &ptr_type_id);
+		bool is_const = false;
+
+		ptr_type_id = t->type;
+		ptr_type = btf_type_by_id(desc_btf, ptr_type_id);
+		while (btf_type_is_modifier(ptr_type)) {
+			if (btf_type_is_const(ptr_type))
+				is_const = true;
+			ptr_type_id = ptr_type->type;
+			ptr_type = btf_type_by_id(desc_btf, ptr_type_id);
+		}
+
 		if (!btf_type_is_struct(ptr_type)) {
 			ptr_type_name = btf_name_by_offset(desc_btf,
 							   ptr_type->name_off);
@@ -7293,7 +7307,7 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		}
 		mark_reg_known_zero(env, regs, BPF_REG_0);
 		regs[BPF_REG_0].btf = desc_btf;
-		regs[BPF_REG_0].type = PTR_TO_BTF_ID;
+		regs[BPF_REG_0].type = PTR_TO_BTF_ID | (is_const ? MEM_RDONLY : 0);
 		regs[BPF_REG_0].btf_id = ptr_type_id;
 		if (btf_kfunc_id_set_contains(desc_btf, resolve_prog_type(env->prog),
 					      BTF_KFUNC_TYPE_RET_NULL, func_id)) {
@@ -13120,6 +13134,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			break;
 		case PTR_TO_BTF_ID:
 		case PTR_TO_BTF_ID | PTR_UNTRUSTED:
+		case PTR_TO_BTF_ID | MEM_RDONLY:
 			if (type == BPF_READ) {
 				insn->code = BPF_LDX | BPF_PROBE_MEM |
 					BPF_SIZE((insn)->code);
