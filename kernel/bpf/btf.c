@@ -3189,6 +3189,7 @@ static int btf_find_kptr(const struct btf *btf, const struct btf_type *t,
 			 u32 off, int sz, struct btf_field_info *info)
 {
 	enum bpf_kptr_type type;
+	bool is_const = false;
 	u32 res_id;
 
 	/* For PTR, sz is always == 8 */
@@ -3209,7 +3210,13 @@ static int btf_find_kptr(const struct btf *btf, const struct btf_type *t,
 		return -EINVAL;
 
 	/* Get the base type */
-	t = btf_type_skip_modifiers(btf, t->type, &res_id);
+	do {
+		res_id = t->type;
+		t = btf_type_by_id(btf, res_id);
+		if (btf_type_is_const(t))
+			is_const = true;
+	} while (btf_type_is_modifier(t));
+
 	/* Only pointer to struct is allowed */
 	if (!__btf_type_is_struct(t))
 		return -EINVAL;
