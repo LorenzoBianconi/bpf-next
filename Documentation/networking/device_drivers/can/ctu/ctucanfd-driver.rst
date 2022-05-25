@@ -72,7 +72,7 @@ it is reachable (on which bus it resides) and its configuration –
 registers address, interrupts and so on. An example of such a device
 tree is given in .
 
-.. code:: raw
+::
 
            / {
                /* ... */
@@ -451,7 +451,7 @@ the FIFO is maintained, together with priority rotation, is depicted in
 
 |
 
-.. figure:: fsm_txt_buffer_user.svg
+.. kernel-figure:: fsm_txt_buffer_user.svg
 
    TX Buffer states with possible transitions
 
@@ -536,7 +536,7 @@ CTU CAN FD Driver Sources Reference
 CTU CAN FD IP Core and Driver Development Acknowledgment
 ---------------------------------------------------------
 
-* Odrej Ille <illeondr@fel.cvut.cz>
+* Odrej Ille <ondrej.ille@gmail.com>
 
   * started the project as student at Department of Measurement, FEE, CTU
   * invested great amount of personal time and enthusiasm to the project over years

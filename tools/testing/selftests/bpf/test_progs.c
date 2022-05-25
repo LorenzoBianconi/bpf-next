@@ -230,9 +230,11 @@ static void print_test_log(char *log_buf, size_t log_cnt)
 		fprintf(env.stdout, "\n");
 }
 
+#define TEST_NUM_WIDTH 7
+
 static void print_test_name(int test_num, const char *test_name, char *result)
 {
-	fprintf(env.stdout, "#%-9d %s", test_num, test_name);
+	fprintf(env.stdout, "#%-*d %s", TEST_NUM_WIDTH, test_num, test_name);
 
 	if (result)
 		fprintf(env.stdout, ":%s", result);
@@ -244,8 +246,12 @@ static void print_subtest_name(int test_num, int subtest_num,
 			       const char *test_name, char *subtest_name,
 			       char *result)
 {
-	fprintf(env.stdout, "#%-3d/%-5d %s/%s",
-		test_num, subtest_num,
+	char test_num_str[TEST_NUM_WIDTH + 1];
+
+	snprintf(test_num_str, sizeof(test_num_str), "%d/%d", test_num, subtest_num);
+
+	fprintf(env.stdout, "#%-*s %s/%s",
+		TEST_NUM_WIDTH, test_num_str,
 		test_name, subtest_name);
 
 	if (result)
@@ -265,6 +271,7 @@ static void dump_test_log(const struct prog_test_def *test,
 	int i;
 	struct subtest_state *subtest_state;
 	bool subtest_failed;
+	bool subtest_filtered;
 	bool print_subtest;
 
 	/* we do not print anything in the worker thread */
@@ -283,9 +290,10 @@ static void dump_test_log(const struct prog_test_def *test,
 	for (i = 0; i < test_state->subtest_num; i++) {
 		subtest_state = &test_state->subtest_states[i];
 		subtest_failed = subtest_state->error_cnt;
+		subtest_filtered = subtest_state->filtered;
 		print_subtest = verbose() || force_log || subtest_failed;
 
-		if (skip_ok_subtests && !subtest_failed)
+		if ((skip_ok_subtests && !subtest_failed) || subtest_filtered)
 			continue;
 
 		if (subtest_state->log_cnt && print_subtest) {
@@ -417,7 +425,7 @@ bool test__start_subtest(const char *subtest_name)
 				state->subtest_num,
 				test->test_name,
 				subtest_name)) {
-		subtest_state->skipped = true;
+		subtest_state->filtered = true;
 		return false;
 	}
 
@@ -1123,6 +1131,7 @@ static int dispatch_thread_send_subtests(int sock_fd, struct test_state *state)
 		subtest_state->name = strdup(msg.subtest_done.name);
 		subtest_state->error_cnt = msg.subtest_done.error_cnt;
 		subtest_state->skipped = msg.subtest_done.skipped;
+		subtest_state->filtered = msg.subtest_done.filtered;
 
 		/* collect all logs */
 		if (msg.subtest_done.have_log)
@@ -1418,6 +1427,7 @@ static int worker_main_send_subtests(int sock, struct test_state *state)
 
 		msg.subtest_done.error_cnt = subtest_state->error_cnt;
 		msg.subtest_done.skipped = subtest_state->skipped;
+		msg.subtest_done.filtered = subtest_state->filtered;
 		msg.subtest_done.have_log = false;
 
 		if (verbose() || state->force_log || subtest_state->error_cnt) {

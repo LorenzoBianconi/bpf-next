@@ -29,9 +29,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/can/error.h>
-#include <linux/can/led.h>
 #include <linux/pm_runtime.h>
-#include <linux/version.h>
 
 #include "ctucanfd.h"
 #include "ctucanfd_kregs.h"
@@ -133,13 +131,12 @@ static u32 ctucan_read32_be(struct ctucan_priv *priv,
 	return ioread32be(priv->mem_base + reg);
 }
 
-static inline void ctucan_write32(struct ctucan_priv *priv, enum ctu_can_fd_can_registers reg,
-				  u32 val)
+static void ctucan_write32(struct ctucan_priv *priv, enum ctu_can_fd_can_registers reg, u32 val)
 {
 	priv->write_reg(priv, reg, val);
 }
 
-static inline u32 ctucan_read32(struct ctucan_priv *priv, enum ctu_can_fd_can_registers reg)
+static u32 ctucan_read32(struct ctucan_priv *priv, enum ctu_can_fd_can_registers reg)
 {
 	return priv->read_reg(priv, reg);
 }
@@ -178,8 +175,6 @@ static int ctucan_reset(struct net_device *ndev)
 {
 	struct ctucan_priv *priv = netdev_priv(ndev);
 	int i = 100;
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	ctucan_write32(priv, CTUCANFD_MODE, REG_MODE_RST);
 	clear_bit(CTUCANFD_FLAG_RX_FFW_BUFFERED, &priv->drv_flags);
@@ -266,8 +261,6 @@ static int ctucan_set_bittiming(struct net_device *ndev)
 	struct ctucan_priv *priv = netdev_priv(ndev);
 	struct can_bittiming *bt = &priv->can.bittiming;
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	/* Note that bt may be modified here */
 	return ctucan_set_btr(ndev, bt, true);
 }
@@ -282,8 +275,6 @@ static int ctucan_set_data_bittiming(struct net_device *ndev)
 {
 	struct ctucan_priv *priv = netdev_priv(ndev);
 	struct can_bittiming *dbt = &priv->can.data_bittiming;
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	/* Note that dbt may be modified here */
 	return ctucan_set_btr(ndev, dbt, false);
@@ -301,8 +292,6 @@ static int ctucan_set_secondary_sample_point(struct net_device *ndev)
 	struct can_bittiming *dbt = &priv->can.data_bittiming;
 	int ssp_offset = 0;
 	u32 ssp_cfg = 0; /* No SSP by default */
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	if (CTU_CAN_FD_ENABLED(priv)) {
 		netdev_err(ndev, "BUG! Cannot set SSP - CAN is enabled\n");
@@ -390,8 +379,6 @@ static int ctucan_chip_start(struct net_device *ndev)
 	int err;
 	struct can_ctrlmode mode;
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	priv->txb_prio = 0x01234567;
 	priv->txb_head = 0;
 	priv->txb_tail = 0;
@@ -457,8 +444,6 @@ static int ctucan_do_set_mode(struct net_device *ndev, enum can_mode mode)
 {
 	int ret;
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	switch (mode) {
 	case CAN_MODE_START:
 		ret = ctucan_reset(ndev);
@@ -486,7 +471,7 @@ static int ctucan_do_set_mode(struct net_device *ndev, enum can_mode mode)
  *
  * Return: Status of TXT buffer
  */
-static inline enum ctucan_txtb_status ctucan_get_tx_status(struct ctucan_priv *priv, u8 buf)
+static enum ctucan_txtb_status ctucan_get_tx_status(struct ctucan_priv *priv, u8 buf)
 {
 	u32 tx_status = ctucan_read32(priv, CTUCANFD_TX_STATUS);
 	enum ctucan_txtb_status status = (tx_status >> (buf * 4)) & 0x7;
@@ -971,9 +956,6 @@ static int ctucan_rx_poll(struct napi_struct *napi, int quota)
 		ctucan_write32(priv, CTUCANFD_COMMAND, REG_COMMAND_CDO);
 	}
 
-	if (work_done)
-		can_led_event(ndev, CAN_LED_EVENT_RX);
-
 	if (!framecnt && res != 0) {
 		if (napi_complete_done(napi, work_done)) {
 			/* Clear and enable RBNEI. It is level-triggered, so
@@ -1093,8 +1075,6 @@ clear:
 		}
 	} while (some_buffers_processed);
 
-	can_led_event(ndev, CAN_LED_EVENT_TX);
-
 	spin_lock_irqsave(&priv->tx_lock, flags);
 
 	/* Check if at least one TX buffer is free */
@@ -1122,8 +1102,6 @@ static irqreturn_t ctucan_interrupt(int irq, void *dev_id)
 	u32 isr, icr;
 	u32 imask;
 	int irq_loops;
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	for (irq_loops = 0; irq_loops < 10000; irq_loops++) {
 		/* Get the interrupt status */
@@ -1198,8 +1176,6 @@ static void ctucan_chip_stop(struct net_device *ndev)
 	u32 mask = 0xffffffff;
 	u32 mode;
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	/* Disable interrupts and disable CAN */
 	ctucan_write32(priv, CTUCANFD_INT_ENA_CLR, mask);
 	ctucan_write32(priv, CTUCANFD_INT_MASK_SET, mask);
@@ -1221,8 +1197,6 @@ static int ctucan_open(struct net_device *ndev)
 {
 	struct ctucan_priv *priv = netdev_priv(ndev);
 	int ret;
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	ret = pm_runtime_get_sync(priv->dev);
 	if (ret < 0) {
@@ -1256,7 +1230,6 @@ static int ctucan_open(struct net_device *ndev)
 	}
 
 	netdev_info(ndev, "ctu_can_fd device registered\n");
-	can_led_event(ndev, CAN_LED_EVENT_OPEN);
 	napi_enable(&priv->napi);
 	netif_start_queue(ndev);
 
@@ -1283,15 +1256,12 @@ static int ctucan_close(struct net_device *ndev)
 {
 	struct ctucan_priv *priv = netdev_priv(ndev);
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
 	ctucan_chip_stop(ndev);
 	free_irq(ndev->irq, ndev);
 	close_candev(ndev);
 
-	can_led_event(ndev, CAN_LED_EVENT_STOP);
 	pm_runtime_put(priv->dev);
 
 	return 0;
@@ -1309,8 +1279,6 @@ static int ctucan_get_berr_counter(const struct net_device *ndev, struct can_ber
 {
 	struct ctucan_priv *priv = netdev_priv(ndev);
 	int ret;
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	ret = pm_runtime_get_sync(priv->dev);
 	if (ret < 0) {
@@ -1337,8 +1305,6 @@ int ctucan_suspend(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct ctucan_priv *priv = netdev_priv(ndev);
 
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
-
 	if (netif_running(ndev)) {
 		netif_stop_queue(ndev);
 		netif_device_detach(ndev);
@@ -1354,8 +1320,6 @@ int ctucan_resume(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct ctucan_priv *priv = netdev_priv(ndev);
-
-	ctucan_netdev_dbg(ndev, "%s\n", __func__);
 
 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
 
@@ -1461,8 +1425,6 @@ int ctucan_probe_common(struct device *dev, void __iomem *addr, int irq, unsigne
 		dev_err(dev, "fail to register failed (err=%d)\n", ret);
 		goto err_deviceoff;
 	}
-
-	devm_can_led_init(ndev);
 
 	pm_runtime_put(dev);
 
