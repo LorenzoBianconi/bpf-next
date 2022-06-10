@@ -43,32 +43,38 @@ static __always_inline int xdp_redirect_map(struct xdp_md *ctx, void *redirect_m
 	struct ethhdr *eth = data;
 	struct datarec *rec;
 	u64 nh_off;
+	u8 dst[] = { 0xd0, 0x50, 0x99, 0x01, 0xd8, 0xba };
+	u8 src[] = { 0xf0, 0xad, 0x4e, 0x09, 0x6b, 0x57 };
 
 	nh_off = sizeof(*eth);
 	if (data + nh_off > data_end)
 		return XDP_DROP;
 
+	if (eth->h_proto != bpf_htons(ETH_P_IP))
+		return XDP_PASS;
+
 	rec = bpf_map_lookup_elem(&rx_cnt, &key);
 	if (!rec)
 		return XDP_PASS;
 	NO_TEAR_INC(rec->processed);
-	swap_src_dst_mac(data);
+	__builtin_memcpy(eth->h_dest, dst, 6);
+	__builtin_memcpy(eth->h_source, src, 6);
 	return bpf_redirect_map(redirect_map, 0, 0);
 }
 
-SEC("xdp")
+SEC("xdp.frags")
 int xdp_redirect_map_general(struct xdp_md *ctx)
 {
 	return xdp_redirect_map(ctx, &tx_port_general);
 }
 
-SEC("xdp")
+SEC("xdp.frags")
 int xdp_redirect_map_native(struct xdp_md *ctx)
 {
 	return xdp_redirect_map(ctx, &tx_port_native);
 }
 
-SEC("xdp/devmap")
+SEC("xdp.frags/devmap")
 int xdp_redirect_map_egress(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -86,7 +92,7 @@ int xdp_redirect_map_egress(struct xdp_md *ctx)
 }
 
 /* Redirect require an XDP bpf_prog loaded on the TX device */
-SEC("xdp")
+SEC("xdp.frags")
 int xdp_redirect_dummy_prog(struct xdp_md *ctx)
 {
 	return XDP_PASS;

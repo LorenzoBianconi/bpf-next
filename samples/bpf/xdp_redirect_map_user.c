@@ -174,7 +174,7 @@ restart:
 	}
 
 	/* Loading dummy XDP prog on out-device */
-	sample_install_xdp(skel->progs.xdp_redirect_dummy_prog, ifindex_out, generic, force);
+	//sample_install_xdp(skel->progs.xdp_redirect_dummy_prog, ifindex_out, generic, force);
 
 	devmap_val.ifindex = ifindex_out;
 	if (xdp_devmap_attached)

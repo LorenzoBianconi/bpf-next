@@ -16,7 +16,7 @@
 
 const volatile int ifindex_out;
 
-SEC("xdp")
+SEC("xdp.frags")
 int xdp_redirect_prog(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -25,22 +25,28 @@ int xdp_redirect_prog(struct xdp_md *ctx)
 	struct ethhdr *eth = data;
 	struct datarec *rec;
 	u64 nh_off;
+	u8 dst[] = { 0xea, 0x71, 0xe3, 0xe7, 0x73, 0xf3 };
+	u8 src[] = { 0xe2, 0xc5, 0xb4, 0x4a, 0x89, 0xa0 };
 
 	nh_off = sizeof(*eth);
 	if (data + nh_off > data_end)
 		return XDP_DROP;
 
-	rec = bpf_map_lookup_elem(&rx_cnt, &key);
-	if (!rec)
+	if (eth->h_proto != bpf_htons(ETH_P_IP))
 		return XDP_PASS;
-	NO_TEAR_INC(rec->processed);
 
-	swap_src_dst_mac(data);
+	rec = bpf_map_lookup_elem(&rx_cnt, &key);
+	if (rec)
+		NO_TEAR_INC(rec->processed);
+
+	__builtin_memcpy(eth->h_dest, dst, 6);
+	__builtin_memcpy(eth->h_source, src, 6);
+
 	return bpf_redirect(ifindex_out, 0);
 }
 
 /* Redirect require an XDP bpf_prog loaded on the TX device */
-SEC("xdp")
+SEC("xdp.frags")
 int xdp_redirect_dummy_prog(struct xdp_md *ctx)
 {
 	return XDP_PASS;

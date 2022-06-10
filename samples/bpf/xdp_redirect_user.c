@@ -137,8 +137,8 @@ int main(int argc, char **argv)
 		goto end_destroy;
 
 	/* Loading dummy XDP prog on out-device */
-	sample_install_xdp(skel->progs.xdp_redirect_dummy_prog, ifindex_out,
-			   generic, force);
+	//sample_install_xdp(skel->progs.xdp_redirect_dummy_prog, ifindex_out,
+	//		   generic, force);
 
 	ret = EXIT_FAIL;
 	if (!if_indextoname(ifindex_in, ifname_in)) {
