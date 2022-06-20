@@ -827,7 +827,7 @@ void i40e_ptp_tx_hwtstamp(struct i40e_pf *pf)
  * one exists. The RXTIME registers are in ns, so we must convert the result
  * first.
  **/
-void i40e_ptp_rx_hwtstamp(struct i40e_pf *pf, struct sk_buff *skb, u8 index)
+u64 i40e_ptp_rx_hwtstamp_raw(struct i40e_pf *pf, u8 index)
 {
 	u32 prttsyn_stat, hi, lo;
 	struct i40e_hw *hw;
@@ -837,7 +837,7 @@ void i40e_ptp_rx_hwtstamp(struct i40e_pf *pf, struct sk_buff *skb, u8 index)
 	 * doing Tx timestamping, check if Rx timestamping is configured.
 	 */
 	if (!(pf->flags & I40E_FLAG_PTP) || !pf->ptp_rx)
-		return;
+		return 0;
 
 	hw = &pf->hw;
 
@@ -849,7 +849,7 @@ void i40e_ptp_rx_hwtstamp(struct i40e_pf *pf, struct sk_buff *skb, u8 index)
 	/* TODO: Should we warn about missing Rx timestamp event? */
 	if (!(prttsyn_stat & BIT(index))) {
 		spin_unlock_bh(&pf->ptp_rx_lock);
-		return;
+		return 0;
 	}
 
 	/* Clear the latched event since we're about to read its register */
@@ -862,7 +862,15 @@ void i40e_ptp_rx_hwtstamp(struct i40e_pf *pf, struct sk_buff *skb, u8 index)
 
 	ns = (((u64)hi) << 32) | lo;
 
-	i40e_ptp_convert_to_hwtstamp(skb_hwtstamps(skb), ns);
+	return ns;
+}
+
+void i40e_ptp_rx_hwtstamp(struct i40e_pf *pf, struct sk_buff *skb, u8 index)
+{
+	u64 ns = i40e_ptp_rx_hwtstamp_raw(pf, index);
+
+	if (ns)
+		i40e_ptp_convert_to_hwtstamp(skb_hwtstamps(skb), ns);
 }
 
 /**
