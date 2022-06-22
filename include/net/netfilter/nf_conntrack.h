@@ -205,6 +205,9 @@ bool nf_ct_get_tuplepr(const struct sk_buff *skb, unsigned int nhoff,
 		       u_int16_t l3num, struct net *net,
 		       struct nf_conntrack_tuple *tuple);
 
+void __nf_ct_change_status(struct nf_conn *ct, unsigned long on,
+			   unsigned long off);
+int nf_ct_change_status(struct nf_conn *ct, unsigned int status);
 void nf_ct_refresh_timeout(struct nf_conn *ct, u32 extra_jiffies);
 void __nf_ct_refresh_acct(struct nf_conn *ct, enum ip_conntrack_info ctinfo,
 			  const struct sk_buff *skb,

@@ -424,6 +424,27 @@ void bpf_ct_refresh_timeout(const struct nf_conn *nfct__ref, u32 timeout)
 	nf_ct_refresh_timeout(nfct, msecs_to_jiffies(timeout));
 }
 
+/* bpf_ct_update_status - Update nf_conn status field
+ *
+ * Update status field in the provided connection tracking entry.
+ * This must be invoked for referenced PTR_TO_BTF_ID.
+ *
+ * Parameters:
+ * @nfct__ref    - Pointer to referenced nf_conn object, obtained using
+ *		   bpf_xdp_ct_lookup or bpf_skb_ct_lookup.
+ * @status       - New ct status value.
+ */
+int bpf_ct_update_status(const struct nf_conn *nfct__ref, u32 status)
+{
+	struct nf_conn *nfct;
+
+	if (!nfct__ref)
+		return -EINVAL;
+
+	nfct = (struct nf_conn *)nfct__ref;
+	return nf_ct_change_status(nfct, status);
+}
+
 __diag_pop()
 
 BTF_SET_START(nf_ct_xdp_check_kfunc_ids)
@@ -432,6 +453,7 @@ BTF_ID(func, bpf_xdp_ct_lookup)
 BTF_ID(func, bpf_ct_insert_entry)
 BTF_ID(func, bpf_ct_release)
 BTF_ID(func, bpf_ct_refresh_timeout);
+BTF_ID(func, bpf_ct_update_status);
 BTF_SET_END(nf_ct_xdp_check_kfunc_ids)
 
 BTF_SET_START(nf_ct_tc_check_kfunc_ids)
@@ -440,6 +462,7 @@ BTF_ID(func, bpf_skb_ct_lookup)
 BTF_ID(func, bpf_ct_insert_entry)
 BTF_ID(func, bpf_ct_release)
 BTF_ID(func, bpf_ct_refresh_timeout);
+BTF_ID(func, bpf_ct_update_status);
 BTF_SET_END(nf_ct_tc_check_kfunc_ids)
 
 BTF_SET_START(nf_ct_acquire_kfunc_ids)
