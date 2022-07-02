@@ -150,6 +150,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/prandom.h>
 #include <linux/once_lite.h>
+#include <linux/xdp_features.h>
 
 #include "dev.h"
 #include "net-sysfs.h"
@@ -9257,6 +9258,17 @@ static int dev_xdp_attach(struct net_device *dev, struct netlink_ext_ack *extack
 		if (!bpf_op) {
 			NL_SET_ERR_MSG(extack, "Underlying driver does not support XDP in native mode");
 			return -EOPNOTSUPP;
+		}
+
+		if (new_prog) {
+			xdp_features_t prog_features, dev_features;
+
+			dev_features = mode == XDP_MODE_SKB ? XDP_F_FULL : READ_ONCE(dev->xdp_features);
+			prog_features = new_prog->aux->xdp_features;
+			if ((dev_features & prog_features) != prog_features) {
+				NL_SET_ERR_MSG(extack, "program XDP features check failed");
+				return -EOPNOTSUPP;
+			}
 		}
 
 		err = dev_xdp_install(dev, mode, bpf_op, extack, flags, new_prog);
