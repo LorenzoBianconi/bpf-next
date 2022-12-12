@@ -102,6 +102,7 @@ static __always_inline int real_bind(struct socket *sock,
 				     struct sockaddr *address,
 				     int addrlen)
 {
+#if 0
 	struct sockaddr_ll sa = {};
 
 	if (sock->sk->__sk_common.skc_family != AF_PACKET)
@@ -117,7 +118,7 @@ static __always_inline int real_bind(struct socket *sock,
 	/* Can access cgroup local storage. */
 	if (!test_local_storage())
 		return 0; /* EPERM */
-
+#endif
 	return 1;
 }
 
