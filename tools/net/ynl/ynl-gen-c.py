@@ -1995,7 +1995,7 @@ def render_uapi(family, cw):
                 cw.nl()
                 if const['type'] == 'flags':
                     max_name = c_upper(name_pfx + 'mask')
-                    max_val = f' = {(entry.user_value() << 1) - 1},'
+                    max_val = f' = {enum.get_mask()},'
                     cw.p(max_name + max_val)
                 else:
                     max_name = c_upper(name_pfx + 'max')
