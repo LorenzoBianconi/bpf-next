@@ -652,10 +652,8 @@ class EnumSet:
 
     def get_mask(self):
         mask = 0
-        idx = self.yaml.get('value-start', 0)
-        for _ in self.entry_list:
-            mask |= 1 << idx
-            idx += 1
+        for e in self.entry_list:
+            mask += e.user_value()
         return mask
 
 
