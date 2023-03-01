@@ -7,6 +7,7 @@
 #include <linux/ethtool.h>
 
 #define ETHTOOL_DEV_FEATURE_WORDS	DIV_ROUND_UP(NETDEV_FEATURE_COUNT, 32)
+#define ETHTOOL_XDP_FEATURES_WORDS	DIV_ROUND_UP(__NETDEV_XDP_ACT_BIT_MAX, 32)
 
 /* compose link mode index from speed, type and duplex */
 #define ETHTOOL_LINK_MODE(speed, type, duplex) \
@@ -36,6 +37,7 @@ extern const char sof_timestamping_names[][ETH_GSTRING_LEN];
 extern const char ts_tx_type_names[][ETH_GSTRING_LEN];
 extern const char ts_rx_filter_names[][ETH_GSTRING_LEN];
 extern const char udp_tunnel_type_names[][ETH_GSTRING_LEN];
+extern const char xdp_features_strings[__NETDEV_XDP_ACT_BIT_MAX][ETH_GSTRING_LEN];
 
 int __ethtool_get_link(struct net_device *dev);
 

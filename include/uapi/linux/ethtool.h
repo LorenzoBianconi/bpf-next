@@ -681,6 +681,7 @@ enum ethtool_link_ext_substate_module {
  * @ETH_SS_STATS_ETH_MAC: names of IEEE 802.3 MAC statistics
  * @ETH_SS_STATS_ETH_CTRL: names of IEEE 802.3 MAC Control statistics
  * @ETH_SS_STATS_RMON: names of RMON statistics
+ * @ETH_SS_XDP_FEATURES: names of XDP supported features
  *
  * @ETH_SS_COUNT: number of defined string sets
  */
@@ -706,6 +707,7 @@ enum ethtool_stringset {
 	ETH_SS_STATS_ETH_MAC,
 	ETH_SS_STATS_ETH_CTRL,
 	ETH_SS_STATS_RMON,
+	ETH_SS_XDP_FEATURES,
 
 	/* add new constants above here */
 	ETH_SS_COUNT
@@ -1430,6 +1432,18 @@ struct ethtool_sfeatures {
 };
 
 /**
+ * struct ethtool_xdp_gfeatures - command to get supported XDP features
+ * @cmd: command number = %ETHTOOL_XDP_GFEATURES
+ * size: array size of the features[] array
+ * @features: XDP feature masks
+ */
+struct ethtool_xdp_gfeatures {
+	__u32	cmd;
+	__u32	size;
+	__u32	features[];
+};
+
+/**
  * struct ethtool_ts_info - holds a device's timestamping and PHC association
  * @cmd: command number = %ETHTOOL_GET_TS_INFO
  * @so_timestamping: bit mask of the sum of the supported SO_TIMESTAMPING flags
@@ -1670,6 +1684,7 @@ enum ethtool_fec_config_bits {
 #define ETHTOOL_PHY_STUNABLE	0x0000004f /* Set PHY tunable configuration */
 #define ETHTOOL_GFECPARAM	0x00000050 /* Get FEC settings */
 #define ETHTOOL_SFECPARAM	0x00000051 /* Set FEC settings */
+#define ETHTOOL_XDP_GFEATURES	0x00000052 /* Get XDP features */
 
 /* compatibility with older code */
 #define SPARC_ETH_GSET		ETHTOOL_GSET

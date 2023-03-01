@@ -170,6 +170,9 @@ static int __ethtool_get_sset_count(struct net_device *dev, int sset)
 	if (sset == ETH_SS_PHY_TUNABLES)
 		return ARRAY_SIZE(phy_tunable_strings);
 
+	if (sset == ETH_SS_XDP_FEATURES)
+		return __NETDEV_XDP_ACT_BIT_MAX;
+
 	if (sset == ETH_SS_PHY_STATS && dev->phydev &&
 	    !ops->get_ethtool_phy_stats &&
 	    phy_ops && phy_ops->get_sset_count)
@@ -200,6 +203,8 @@ static void __ethtool_get_strings(struct net_device *dev,
 		memcpy(data, tunable_strings, sizeof(tunable_strings));
 	else if (stringset == ETH_SS_PHY_TUNABLES)
 		memcpy(data, phy_tunable_strings, sizeof(phy_tunable_strings));
+	else if (stringset == ETH_SS_XDP_FEATURES)
+		memcpy(data, xdp_features_strings, sizeof(xdp_features_strings));
 	else if (stringset == ETH_SS_PHY_STATS && dev->phydev &&
 		 !ops->get_ethtool_phy_stats && phy_ops &&
 		 phy_ops->get_strings)
@@ -2749,6 +2754,37 @@ static int ethtool_set_fecparam(struct net_device *dev, void __user *useraddr)
 	return dev->ethtool_ops->set_fecparam(dev, &fecparam);
 }
 
+static int ethtool_get_xdp_features(struct net_device *dev,
+				    void __user *useraddr)
+{
+	u32 copy_size, features[ETHTOOL_XDP_FEATURES_WORDS];
+	struct ethtool_gfeatures cmd = {
+		.cmd = ETHTOOL_XDP_GFEATURES,
+		.size = ETHTOOL_XDP_FEATURES_WORDS,
+	};
+	u32 __user *sizeaddr;
+
+	BUILD_BUG_ON(ETHTOOL_XDP_FEATURES_WORDS != 1);
+	features[0] = dev->xdp_features;
+
+	sizeaddr = useraddr + offsetof(struct ethtool_xdp_gfeatures, size);
+	if (get_user(copy_size, sizeaddr))
+		return -EFAULT;
+
+	if (copy_size > ETHTOOL_XDP_FEATURES_WORDS)
+		copy_size = ETHTOOL_XDP_FEATURES_WORDS;
+
+	if (copy_to_user(useraddr, &cmd, sizeof(cmd)))
+		return -EFAULT;
+
+	useraddr += sizeof(cmd);
+	if (copy_to_user(useraddr, features,
+			 array_size(copy_size, sizeof(*features))))
+		return -EFAULT;
+
+	return 0;
+}
+
 /* The main entry point in this file.  Called from net/core/dev_ioctl.c */
 
 static int
@@ -2808,6 +2844,7 @@ __dev_ethtool(struct net *net, struct ifreq *ifr, void __user *useraddr,
 	case ETHTOOL_PHY_GTUNABLE:
 	case ETHTOOL_GLINKSETTINGS:
 	case ETHTOOL_GFECPARAM:
+	case ETHTOOL_XDP_GFEATURES:
 		break;
 	default:
 		if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
@@ -3034,6 +3071,9 @@ __dev_ethtool(struct net *net, struct ifreq *ifr, void __user *useraddr,
 		break;
 	case ETHTOOL_SFECPARAM:
 		rc = ethtool_set_fecparam(dev, useraddr);
+		break;
+	case ETHTOOL_XDP_GFEATURES:
+		rc = ethtool_get_xdp_features(dev, useraddr);
 		break;
 	default:
 		rc = -EOPNOTSUPP;

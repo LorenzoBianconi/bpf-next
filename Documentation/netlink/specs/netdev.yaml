@@ -40,6 +40,18 @@ definitions:
         doc:
           This feature informs if netdev implements non-linear XDP buffer
           support in ndo_xdp_xmit callback.
+  -
+    type: enum
+    name: xdp-act-bit
+    render-max: true
+    entries:
+      - name: basic-bit
+      - name: redirect-bit
+      - name: ndo-xmit-bit
+      - name: xsk-zerocopy-bit
+      - name: hw-offload-bit
+      - name: rx-sg-bit
+      - name: ndo-xmit-sg-bit
 
 attribute-sets:
   -

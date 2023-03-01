@@ -465,6 +465,17 @@ const char udp_tunnel_type_names[][ETH_GSTRING_LEN] = {
 static_assert(ARRAY_SIZE(udp_tunnel_type_names) ==
 	      __ETHTOOL_UDP_TUNNEL_TYPE_CNT);
 
+const char xdp_features_strings[][ETH_GSTRING_LEN] = {
+	[NETDEV_XDP_ACT_BIT_BASIC_BIT] =	"xdp-basic",
+	[NETDEV_XDP_ACT_BIT_REDIRECT_BIT] =	"xdp-redirect",
+	[NETDEV_XDP_ACT_BIT_NDO_XMIT_BIT] =	"xdp-ndo-xmit",
+	[NETDEV_XDP_ACT_BIT_XSK_ZEROCOPY_BIT] =	"xdp-xsk-zerocopy",
+	[NETDEV_XDP_ACT_BIT_HW_OFFLOAD_BIT] =	"xdp-hw-offload",
+	[NETDEV_XDP_ACT_BIT_RX_SG_BIT] =	"xdp-rx-sg",
+	[NETDEV_XDP_ACT_BIT_NDO_XMIT_SG_BIT] =	"xdp-ndo-xmit-sg",
+};
+static_assert(ARRAY_SIZE(xdp_features_strings) == __NETDEV_XDP_ACT_BIT_MAX);
+
 /* return false if legacy contained non-0 deprecated fields
  * maxtxpkt/maxrxpkt. rest of ksettings always updated
  */
