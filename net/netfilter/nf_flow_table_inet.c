@@ -8,9 +8,8 @@
 #include <net/netfilter/nf_tables.h>
 #include <linux/if_vlan.h>
 
-static unsigned int
-nf_flow_offload_inet_hook(void *priv, struct sk_buff *skb,
-			  const struct nf_hook_state *state)
+unsigned int nf_flow_offload_inet_hook(void *priv, struct sk_buff *skb,
+				       const struct nf_hook_state *state)
 {
 	struct vlan_ethhdr *veth;
 	__be16 proto;
@@ -37,6 +36,7 @@ nf_flow_offload_inet_hook(void *priv, struct sk_buff *skb,
 
 	return NF_ACCEPT;
 }
+EXPORT_SYMBOL_GPL(nf_flow_offload_inet_hook);
 
 static int nf_flow_rule_route_inet(struct net *net,
 				   struct flow_offload *flow,
@@ -96,6 +96,8 @@ static int __init nf_flow_inet_module_init(void)
 	nft_register_flowtable_type(&flowtable_ipv4);
 	nft_register_flowtable_type(&flowtable_ipv6);
 	nft_register_flowtable_type(&flowtable_inet);
+
+	nf_flow_offload_register_bpf();
 
 	return 0;
 }
