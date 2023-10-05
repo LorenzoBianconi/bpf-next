@@ -310,6 +310,10 @@ static inline bool nf_flow_dst_check(struct flow_offload_tuple *tuple)
 	return dst_check(tuple->dst_cache, tuple->dst_cookie);
 }
 
+int nf_flow_state_check(struct flow_offload *flow, int proto,
+			const unsigned char *network_header,
+			unsigned int thoff);
+
 #if IS_ENABLED(CONFIG_DEBUG_INFO_BTF) || IS_ENABLED(CONFIG_DEBUG_INFO_BTF_MODULES)
 extern int nf_flow_offload_register_bpf(void);
 #else

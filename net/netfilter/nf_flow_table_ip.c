@@ -19,15 +19,16 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 
-static int nf_flow_state_check(struct flow_offload *flow, int proto,
-			       struct sk_buff *skb, unsigned int thoff)
+int nf_flow_state_check(struct flow_offload *flow, int proto,
+			const unsigned char *network_header,
+			unsigned int thoff)
 {
 	struct tcphdr *tcph;
 
 	if (proto != IPPROTO_TCP)
 		return 0;
 
-	tcph = (void *)(skb_network_header(skb) + thoff);
+	tcph = (void *)(network_header + thoff);
 	if (unlikely(tcph->fin || tcph->rst)) {
 		flow_offload_teardown(flow);
 		return -1;
@@ -35,6 +36,7 @@ static int nf_flow_state_check(struct flow_offload *flow, int proto,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(nf_flow_state_check);
 
 static void nf_flow_nat_ip_tcp(struct sk_buff *skb, unsigned int thoff,
 			       __be32 addr, __be32 new_addr)
@@ -368,7 +370,8 @@ static int nf_flow_offload_forward(struct nf_flowtable_ctx *ctx,
 
 	iph = (struct iphdr *)(skb_network_header(skb) + ctx->offset);
 	thoff = (iph->ihl * 4) + ctx->offset;
-	if (nf_flow_state_check(flow, iph->protocol, skb, thoff))
+	if (nf_flow_state_check(flow, iph->protocol, skb_network_header(skb),
+				thoff))
 		return 0;
 
 	if (!nf_flow_dst_check(&tuplehash->tuple)) {
@@ -647,7 +650,8 @@ static int nf_flow_offload_ipv6_forward(struct nf_flowtable_ctx *ctx,
 
 	ip6h = (struct ipv6hdr *)(skb_network_header(skb) + ctx->offset);
 	thoff = sizeof(*ip6h) + ctx->offset;
-	if (nf_flow_state_check(flow, ip6h->nexthdr, skb, thoff))
+	if (nf_flow_state_check(flow, ip6h->nexthdr, skb_network_header(skb),
+				thoff))
 		return 0;
 
 	if (!nf_flow_dst_check(&tuplehash->tuple)) {
