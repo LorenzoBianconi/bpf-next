@@ -13,6 +13,7 @@
 #include <linux/netfilter.h>
 #include <linux/rhashtable.h>
 #include <linux/ip.h>
+#include <net/ip.h>
 #include <linux/ipv6.h>
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
@@ -107,10 +108,88 @@ bpf_xdp_flow_offload_lookup(struct xdp_md *ctx,
 	return bpf_xdp_flow_offload_tuple_lookup(xdp->rxq->dev, &tuple, proto);
 }
 
+static int bpf_xdp_flow_offload_ip(struct flow_offload_tuple_rhash *tuplehash,
+				   void *nethdr)
+{
+	enum flow_offload_tuple_dir dir = tuplehash->tuple.dir;
+	struct iphdr *iph = nethdr;
+	unsigned int thoff = iph->ihl * 4;
+	struct flow_offload *flow;
+
+	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+	if (!nf_flow_dst_check(&tuplehash->tuple)) {
+		flow_offload_teardown(flow);
+		return -EINVAL;
+	}
+
+	if (nf_flow_state_check(flow, iph->protocol, nethdr, thoff))
+		return -EINVAL;
+
+	/* fragmented IP or IP options */
+	if (ip_is_fragment(iph) || thoff != sizeof(*iph))
+		return -EINVAL;
+
+	if (iph->ttl <= 1)
+		return -EINVAL;
+
+	nf_flow_nat_ip(flow, NULL, thoff, dir, iph);
+	ip_decrease_ttl(iph);
+
+	return 0;
+}
+
+static int
+bpf_xdp_flow_offload_ipv6(struct flow_offload_tuple_rhash *tuplehash,
+			  void *nethdr)
+{
+	enum flow_offload_tuple_dir dir = tuplehash->tuple.dir;
+	struct ipv6hdr *ip6h = nethdr;
+	struct flow_offload *flow;
+
+	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+	if (!nf_flow_dst_check(&tuplehash->tuple)) {
+		flow_offload_teardown(flow);
+		return -EINVAL;
+	}
+
+	if (nf_flow_state_check(flow, ip6h->nexthdr, nethdr, sizeof(*ip6h)))
+		return -EINVAL;
+
+	if (ip6h->hop_limit <= 1)
+		return -EINVAL;
+
+	nf_flow_nat_ipv6(flow, NULL, dir, ip6h);
+	ip6h->hop_limit--;
+
+	return 0;
+}
+
+__bpf_kfunc int
+bpf_xdp_flow_offload_inet(struct xdp_md *xdp_ctx,
+			  struct flow_offload_tuple_rhash *tuplehash)
+{
+	struct xdp_buff *xdp = (struct xdp_buff *)xdp_ctx;
+	struct ethhdr *eth = xdp->data;
+	void *nethdr = xdp->data + sizeof(*eth);
+
+	if (!tuplehash)
+		return -EINVAL;
+
+	switch (eth->h_proto) {
+	case htons(ETH_P_IP):
+		return bpf_xdp_flow_offload_ip(tuplehash, nethdr);
+	case htons(ETH_P_IPV6):
+		return bpf_xdp_flow_offload_ipv6(tuplehash, nethdr);
+	default:
+		return -EINVAL;
+	}
+}
+
 __diag_pop()
 
 BTF_SET8_START(nf_ft_kfunc_set)
 BTF_ID_FLAGS(func, bpf_xdp_flow_offload_lookup)
+BTF_ID_FLAGS(func, bpf_xdp_flow_offload_inet)
 BTF_SET8_END(nf_ft_kfunc_set)
 
 static const struct btf_kfunc_id_set nf_flow_offload_kfunc_set = {
