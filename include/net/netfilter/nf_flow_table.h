@@ -301,6 +301,15 @@ unsigned int nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 unsigned int nf_flow_offload_inet_hook(void *priv, struct sk_buff *skb,
 				       const struct nf_hook_state *state);
 
+static inline bool nf_flow_dst_check(struct flow_offload_tuple *tuple)
+{
+	if (tuple->xmit_type != FLOW_OFFLOAD_XMIT_NEIGH &&
+	    tuple->xmit_type != FLOW_OFFLOAD_XMIT_XFRM)
+		return true;
+
+	return dst_check(tuple->dst_cache, tuple->dst_cookie);
+}
+
 #if IS_ENABLED(CONFIG_DEBUG_INFO_BTF) || IS_ENABLED(CONFIG_DEBUG_INFO_BTF_MODULES)
 extern int nf_flow_offload_register_bpf(void);
 #else
