@@ -443,50 +443,55 @@ static void nf_flow_offload_work_gc(struct work_struct *work)
 	queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
 }
 
-static void nf_flow_nat_port_tcp(struct sk_buff *skb, unsigned int thoff,
+static void nf_flow_nat_port_tcp(struct sk_buff *skb, void *thdr,
 				 __be16 port, __be16 new_port)
 {
-	struct tcphdr *tcph;
+	struct tcphdr *tcph = thdr;
 
-	tcph = (void *)(skb_network_header(skb) + thoff);
-	inet_proto_csum_replace2(&tcph->check, skb, port, new_port, false);
+	if (skb)
+		inet_proto_csum_replace2(&tcph->check, skb, port, new_port,
+					 false);
+	else
+		csum_replace4(&tcph->check, (__be32)port, (__be32)new_port);
 }
 
-static void nf_flow_nat_port_udp(struct sk_buff *skb, unsigned int thoff,
+static void nf_flow_nat_port_udp(struct sk_buff *skb, void *thdr,
 				 __be16 port, __be16 new_port)
 {
-	struct udphdr *udph;
+	struct udphdr *udph = thdr;
 
-	udph = (void *)(skb_network_header(skb) + thoff);
 	if (udph->check || skb->ip_summed == CHECKSUM_PARTIAL) {
-		inet_proto_csum_replace2(&udph->check, skb, port,
-					 new_port, false);
+		if (skb)
+			inet_proto_csum_replace2(&udph->check, skb, port,
+						 new_port, false);
+		else
+			csum_replace4(&udph->check, (__be32)port,
+				      (__be32)new_port);
 		if (!udph->check)
 			udph->check = CSUM_MANGLED_0;
 	}
 }
 
-static void nf_flow_nat_port(struct sk_buff *skb, unsigned int thoff,
+static void nf_flow_nat_port(struct sk_buff *skb, void *thdr,
 			     u8 protocol, __be16 port, __be16 new_port)
 {
 	switch (protocol) {
 	case IPPROTO_TCP:
-		nf_flow_nat_port_tcp(skb, thoff, port, new_port);
+		nf_flow_nat_port_tcp(skb, thdr, port, new_port);
 		break;
 	case IPPROTO_UDP:
-		nf_flow_nat_port_udp(skb, thoff, port, new_port);
+		nf_flow_nat_port_udp(skb, thdr, port, new_port);
 		break;
 	}
 }
 
 void nf_flow_snat_port(const struct flow_offload *flow,
-		       struct sk_buff *skb, unsigned int thoff,
-		       u8 protocol, enum flow_offload_tuple_dir dir)
+		       struct sk_buff *skb, void *network_header,
+		       unsigned int thoff, u8 protocol,
+		       enum flow_offload_tuple_dir dir)
 {
-	struct flow_ports *hdr;
+	struct flow_ports *hdr = network_header + thoff;
 	__be16 port, new_port;
-
-	hdr = (void *)(skb_network_header(skb) + thoff);
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
@@ -501,18 +506,17 @@ void nf_flow_snat_port(const struct flow_offload *flow,
 		break;
 	}
 
-	nf_flow_nat_port(skb, thoff, protocol, port, new_port);
+	nf_flow_nat_port(skb, (void *)hdr, protocol, port, new_port);
 }
 EXPORT_SYMBOL_GPL(nf_flow_snat_port);
 
-void nf_flow_dnat_port(const struct flow_offload *flow, struct sk_buff *skb,
+void nf_flow_dnat_port(const struct flow_offload *flow,
+		       struct sk_buff *skb, void *network_header,
 		       unsigned int thoff, u8 protocol,
 		       enum flow_offload_tuple_dir dir)
 {
-	struct flow_ports *hdr;
+	struct flow_ports *hdr = network_header + thoff;
 	__be16 port, new_port;
-
-	hdr = (void *)(skb_network_header(skb) + thoff);
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
@@ -527,7 +531,7 @@ void nf_flow_dnat_port(const struct flow_offload *flow, struct sk_buff *skb,
 		break;
 	}
 
-	nf_flow_nat_port(skb, thoff, protocol, port, new_port);
+	nf_flow_nat_port(skb, (void *)hdr, protocol, port, new_port);
 }
 EXPORT_SYMBOL_GPL(nf_flow_dnat_port);
 

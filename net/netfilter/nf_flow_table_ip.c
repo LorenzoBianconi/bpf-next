@@ -134,11 +134,13 @@ static void nf_flow_nat_ip(const struct flow_offload *flow, struct sk_buff *skb,
 			  struct iphdr *iph)
 {
 	if (test_bit(NF_FLOW_SNAT, &flow->flags)) {
-		nf_flow_snat_port(flow, skb, thoff, iph->protocol, dir);
+		nf_flow_snat_port(flow, skb, (void *)iph, thoff, iph->protocol,
+				  dir);
 		nf_flow_snat_ip(flow, skb, iph, thoff, dir);
 	}
 	if (test_bit(NF_FLOW_DNAT, &flow->flags)) {
-		nf_flow_dnat_port(flow, skb, thoff, iph->protocol, dir);
+		nf_flow_dnat_port(flow, skb, (void *)iph, thoff, iph->protocol,
+				  dir);
 		nf_flow_dnat_ip(flow, skb, iph, thoff, dir);
 	}
 }
@@ -564,11 +566,13 @@ static void nf_flow_nat_ipv6(const struct flow_offload *flow,
 	unsigned int thoff = sizeof(*ip6h);
 
 	if (test_bit(NF_FLOW_SNAT, &flow->flags)) {
-		nf_flow_snat_port(flow, skb, thoff, ip6h->nexthdr, dir);
+		nf_flow_snat_port(flow, skb, (void *)ip6h, thoff,
+				  ip6h->nexthdr, dir);
 		nf_flow_snat_ipv6(flow, ip6h, thoff, skb->ip_summed, dir);
 	}
 	if (test_bit(NF_FLOW_DNAT, &flow->flags)) {
-		nf_flow_dnat_port(flow, skb, thoff, ip6h->nexthdr, dir);
+		nf_flow_dnat_port(flow, skb, (void *)ip6h, thoff,
+				  ip6h->nexthdr, dir);
 		nf_flow_dnat_ipv6(flow, ip6h, thoff, skb->ip_summed, dir);
 	}
 }
