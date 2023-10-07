@@ -129,9 +129,9 @@ static void nf_flow_dnat_ip(const struct flow_offload *flow,
 	nf_flow_nat_ip_l4proto(skb, iph, thoff, addr, new_addr);
 }
 
-static void nf_flow_nat_ip(const struct flow_offload *flow, struct sk_buff *skb,
-			  unsigned int thoff, enum flow_offload_tuple_dir dir,
-			  struct iphdr *iph)
+void nf_flow_nat_ip(const struct flow_offload *flow, struct sk_buff *skb,
+		    unsigned int thoff, enum flow_offload_tuple_dir dir,
+		    struct iphdr *iph)
 {
 	if (test_bit(NF_FLOW_SNAT, &flow->flags)) {
 		nf_flow_snat_port(flow, skb, (void *)iph, thoff, iph->protocol,
@@ -144,6 +144,7 @@ static void nf_flow_nat_ip(const struct flow_offload *flow, struct sk_buff *skb,
 		nf_flow_dnat_ip(flow, skb, iph, thoff, dir);
 	}
 }
+EXPORT_SYMBOL_GPL(nf_flow_nat_ip);
 
 static bool ip_has_options(unsigned int thoff)
 {
@@ -558,10 +559,8 @@ static void nf_flow_dnat_ipv6(const struct flow_offload *flow,
 	nf_flow_nat_ipv6_l4proto(ip6h, thoff, ip_summed, &addr, &new_addr);
 }
 
-static void nf_flow_nat_ipv6(const struct flow_offload *flow,
-			     struct sk_buff *skb,
-			     enum flow_offload_tuple_dir dir,
-			     struct ipv6hdr *ip6h)
+void nf_flow_nat_ipv6(const struct flow_offload *flow, struct sk_buff *skb,
+		      enum flow_offload_tuple_dir dir, struct ipv6hdr *ip6h)
 {
 	unsigned int thoff = sizeof(*ip6h);
 
@@ -576,6 +575,7 @@ static void nf_flow_nat_ipv6(const struct flow_offload *flow,
 		nf_flow_dnat_ipv6(flow, ip6h, thoff, skb->ip_summed, dir);
 	}
 }
+EXPORT_SYMBOL_GPL(nf_flow_nat_ipv6);
 
 static int nf_flow_tuple_ipv6(struct nf_flowtable_ctx *ctx, struct sk_buff *skb,
 			      struct flow_offload_tuple *tuple)

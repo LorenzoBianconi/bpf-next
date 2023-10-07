@@ -13,6 +13,8 @@
 #include <linux/if_pppox.h>
 #include <linux/ppp_defs.h>
 
+struct iphdr;
+struct ipv6hdr;
 struct nf_flowtable;
 struct nf_flow_rule;
 struct flow_offload;
@@ -282,6 +284,11 @@ void nf_flow_table_free(struct nf_flowtable *flow_table);
 
 void flow_offload_teardown(struct flow_offload *flow);
 
+void nf_flow_nat_ip(const struct flow_offload *flow, struct sk_buff *skb,
+		    unsigned int thoff, enum flow_offload_tuple_dir dir,
+		    struct iphdr *iph);
+void nf_flow_nat_ipv6(const struct flow_offload *flow, struct sk_buff *skb,
+		      enum flow_offload_tuple_dir dir, struct ipv6hdr *ip6h);
 void nf_flow_snat_port(const struct flow_offload *flow,
 		       struct sk_buff *skb, void *network_header,
 		       unsigned int thoff, u8 protocol,
