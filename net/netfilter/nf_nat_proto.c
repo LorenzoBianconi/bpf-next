@@ -476,7 +476,7 @@ static void nf_nat_ipv6_csum_update(struct sk_buff *skb,
 		oldip = &ipv6h->daddr;
 		newip = &t->dst.u3.in6;
 	}
-	inet_proto_csum_replace16(check, skb, oldip->s6_addr32,
+	inet_proto_csum_replace16(check, skb->ip_summed, oldip->s6_addr32,
 				  newip->s6_addr32, true);
 #endif
 }

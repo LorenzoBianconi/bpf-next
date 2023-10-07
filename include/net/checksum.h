@@ -154,7 +154,7 @@ static inline void csum_replace(__wsum *csum, __wsum old, __wsum new)
 struct sk_buff;
 void inet_proto_csum_replace4(__sum16 *sum, struct sk_buff *skb,
 			      __be32 from, __be32 to, bool pseudohdr);
-void inet_proto_csum_replace16(__sum16 *sum, struct sk_buff *skb,
+void inet_proto_csum_replace16(__sum16 *sum, u8 ip_summed,
 			       const __be32 *from, const __be32 *to,
 			       bool pseudohdr);
 void inet_proto_csum_replace_by_diff(__sum16 *sum, struct sk_buff *skb,

@@ -469,7 +469,7 @@ static void nf_flow_nat_ipv6_tcp(struct sk_buff *skb, unsigned int thoff,
 	struct tcphdr *tcph;
 
 	tcph = (void *)(skb_network_header(skb) + thoff);
-	inet_proto_csum_replace16(&tcph->check, skb, addr->s6_addr32,
+	inet_proto_csum_replace16(&tcph->check, skb->ip_summed, addr->s6_addr32,
 				  new_addr->s6_addr32, true);
 }
 
@@ -481,7 +481,8 @@ static void nf_flow_nat_ipv6_udp(struct sk_buff *skb, unsigned int thoff,
 
 	udph = (void *)(skb_network_header(skb) + thoff);
 	if (udph->check || skb->ip_summed == CHECKSUM_PARTIAL) {
-		inet_proto_csum_replace16(&udph->check, skb, addr->s6_addr32,
+		inet_proto_csum_replace16(&udph->check, skb->ip_summed,
+					  addr->s6_addr32,
 					  new_addr->s6_addr32, true);
 		if (!udph->check)
 			udph->check = CSUM_MANGLED_0;

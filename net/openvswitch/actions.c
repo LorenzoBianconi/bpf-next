@@ -386,14 +386,16 @@ static void update_ipv6_checksum(struct sk_buff *skb, u8 l4_proto,
 
 	if (l4_proto == NEXTHDR_TCP) {
 		if (likely(transport_len >= sizeof(struct tcphdr)))
-			inet_proto_csum_replace16(&tcp_hdr(skb)->check, skb,
-						  addr, new_addr, true);
+			inet_proto_csum_replace16(&tcp_hdr(skb)->check,
+						  skb->ip_summed, addr,
+						  new_addr, true);
 	} else if (l4_proto == NEXTHDR_UDP) {
 		if (likely(transport_len >= sizeof(struct udphdr))) {
 			struct udphdr *uh = udp_hdr(skb);
 
 			if (uh->check || skb->ip_summed == CHECKSUM_PARTIAL) {
-				inet_proto_csum_replace16(&uh->check, skb,
+				inet_proto_csum_replace16(&uh->check,
+							  skb->ip_summed,
 							  addr, new_addr, true);
 				if (!uh->check)
 					uh->check = CSUM_MANGLED_0;
@@ -402,7 +404,8 @@ static void update_ipv6_checksum(struct sk_buff *skb, u8 l4_proto,
 	} else if (l4_proto == NEXTHDR_ICMP) {
 		if (likely(transport_len >= sizeof(struct icmp6hdr)))
 			inet_proto_csum_replace16(&icmp6_hdr(skb)->icmp6_cksum,
-						  skb, addr, new_addr, true);
+						  skb->ip_summed, addr,
+						  new_addr, true);
 	}
 }
 

@@ -441,7 +441,7 @@ EXPORT_SYMBOL(inet_proto_csum_replace4);
 /**
  * inet_proto_csum_replace16 - update layer 4 header checksum field
  * @sum: Layer 4 header checksum field
- * @skb: sk_buff for the packet
+ * @ip_summed: configured checksum type
  * @from: old IPv6 address
  * @to: new IPv6 address
  * @pseudohdr: True if layer 4 header checksum includes pseudoheader
@@ -455,7 +455,7 @@ EXPORT_SYMBOL(inet_proto_csum_replace4);
  * b.) IPv4 Header checksum and c.) L4 header checksum results in same diff as
  * L4 Header checksum for skb->csum calculation.
  */
-void inet_proto_csum_replace16(__sum16 *sum, struct sk_buff *skb,
+void inet_proto_csum_replace16(__sum16 *sum, u8 ip_summed,
 			       const __be32 *from, const __be32 *to,
 			       bool pseudohdr)
 {
@@ -463,7 +463,7 @@ void inet_proto_csum_replace16(__sum16 *sum, struct sk_buff *skb,
 		~from[0], ~from[1], ~from[2], ~from[3],
 		to[0], to[1], to[2], to[3],
 	};
-	if (skb->ip_summed != CHECKSUM_PARTIAL) {
+	if (ip_summed != CHECKSUM_PARTIAL) {
 		*sum = csum_fold(csum_partial(diff, sizeof(diff),
 				 ~csum_unfold(*sum)));
 	} else if (pseudohdr)
