@@ -38,24 +38,32 @@ int nf_flow_state_check(struct flow_offload *flow, int proto,
 }
 EXPORT_SYMBOL_GPL(nf_flow_state_check);
 
-static void nf_flow_nat_ip_tcp(struct sk_buff *skb, unsigned int thoff,
-			       __be32 addr, __be32 new_addr)
+static void nf_flow_nat_ip_tcp(struct sk_buff *skb, struct iphdr *iph,
+			       unsigned int thoff, __be32 addr,
+			       __be32 new_addr)
 {
-	struct tcphdr *tcph;
+	struct tcphdr *tcph = (void *)iph + thoff;
 
-	tcph = (void *)(skb_network_header(skb) + thoff);
-	inet_proto_csum_replace4(&tcph->check, skb, addr, new_addr, true);
+	if (skb)
+		inet_proto_csum_replace4(&tcph->check, skb, addr,
+					 new_addr, true);
+	else
+		csum_replace4(&tcph->check, addr, new_addr);
 }
 
-static void nf_flow_nat_ip_udp(struct sk_buff *skb, unsigned int thoff,
-			       __be32 addr, __be32 new_addr)
+static void nf_flow_nat_ip_udp(struct sk_buff *skb, struct iphdr *iph,
+			       unsigned int thoff, __be32 addr,
+			       __be32 new_addr)
 {
-	struct udphdr *udph;
+	struct udphdr *udph = (void *)iph + thoff;
 
-	udph = (void *)(skb_network_header(skb) + thoff);
 	if (udph->check || skb->ip_summed == CHECKSUM_PARTIAL) {
-		inet_proto_csum_replace4(&udph->check, skb, addr,
-					 new_addr, true);
+		if (skb)
+			inet_proto_csum_replace4(&udph->check, skb, addr,
+						 new_addr, true);
+		else
+			csum_replace4(&udph->check, addr, new_addr);
+
 		if (!udph->check)
 			udph->check = CSUM_MANGLED_0;
 	}
@@ -67,10 +75,10 @@ static void nf_flow_nat_ip_l4proto(struct sk_buff *skb, struct iphdr *iph,
 {
 	switch (iph->protocol) {
 	case IPPROTO_TCP:
-		nf_flow_nat_ip_tcp(skb, thoff, addr, new_addr);
+		nf_flow_nat_ip_tcp(skb, iph, thoff, addr, new_addr);
 		break;
 	case IPPROTO_UDP:
-		nf_flow_nat_ip_udp(skb, thoff, addr, new_addr);
+		nf_flow_nat_ip_udp(skb, iph, thoff, addr, new_addr);
 		break;
 	}
 }
