@@ -15,6 +15,7 @@
 #include <linux/ip.h>
 #include <net/ip.h>
 #include <linux/ipv6.h>
+#include <net/ip6_route.h>
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
 #include <net/netfilter/nf_flow_table.h>
@@ -185,11 +186,81 @@ bpf_xdp_flow_offload_inet(struct xdp_md *xdp_ctx,
 	}
 }
 
+static int
+bpf_xdp_flow_offload_xmit_neigh(struct ethhdr *eth,
+				struct flow_offload_tuple_rhash *tuplehash)
+{
+	enum flow_offload_tuple_dir dir = tuplehash->tuple.dir;
+	struct flow_offload *flow;
+	struct neighbour *neigh;
+	struct net_device *dev;
+
+	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+	switch (tuplehash->tuple.l3proto) {
+	case AF_INET: {
+		struct rtable *rt;
+		__be32 nexthop;
+
+		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+		dev = rt->dst.dev;
+		nexthop = rt_nexthop(rt,
+				     flow->tuplehash[!dir].tuple.src_v4.s_addr);
+		neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
+		break;
+	}
+	case AF_INET6: {
+		const struct in6_addr *nexthop;
+		struct rt6_info *rt;
+
+		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+		dev = rt->dst.dev;
+		nexthop = rt6_nexthop(rt, &flow->tuplehash[!dir].tuple.src_v6);
+		neigh = __ipv6_neigh_lookup_noref_stub(dev, nexthop);
+		break;
+	}
+	default:
+		return -EINVAL;
+	}
+
+	if (!neigh)
+		return -EINVAL;
+
+
+	memcpy(eth->h_dest, neigh->ha, ETH_ALEN);
+	memcpy(eth->h_source, dev->dev_addr, ETH_ALEN);
+
+	return dev->ifindex;
+}
+
+__bpf_kfunc int
+bpf_xdp_flow_offload_xmit(struct xdp_md *xdp_ctx,
+			  struct flow_offload_tuple_rhash *tuplehash)
+{
+	struct xdp_buff *xdp = (struct xdp_buff *)xdp_ctx;
+	struct ethhdr *eth = xdp->data;
+
+	if (!tuplehash)
+		return -EINVAL;
+
+	switch (tuplehash->tuple.xmit_type) {
+	case FLOW_OFFLOAD_XMIT_NEIGH:
+		return bpf_xdp_flow_offload_xmit_neigh(eth, tuplehash);
+	case FLOW_OFFLOAD_XMIT_DIRECT:
+		memcpy(eth->h_dest, tuplehash->tuple.out.h_dest, ETH_ALEN);
+		memcpy(eth->h_source, tuplehash->tuple.out.h_source, ETH_ALEN);
+		return tuplehash->tuple.out.ifidx;
+	case FLOW_OFFLOAD_XMIT_XFRM: /* not supported yet */
+	default:
+		return -EINVAL;
+	}
+}
+
 __diag_pop()
 
 BTF_SET8_START(nf_ft_kfunc_set)
 BTF_ID_FLAGS(func, bpf_xdp_flow_offload_lookup)
 BTF_ID_FLAGS(func, bpf_xdp_flow_offload_inet)
+BTF_ID_FLAGS(func, bpf_xdp_flow_offload_xmit)
 BTF_SET8_END(nf_ft_kfunc_set)
 
 static const struct btf_kfunc_id_set nf_flow_offload_kfunc_set = {
