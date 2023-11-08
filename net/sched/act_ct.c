@@ -45,7 +45,7 @@ struct tcf_ct_flow_table {
 	struct rhash_head node; /* In zones tables */
 
 	struct rcu_work rwork;
-	struct nf_flowtable nf_ft;
+	struct nf_flowtable *nf_ft;
 	refcount_t ref;
 	u16 zone;
 
@@ -290,20 +290,20 @@ static void tcf_ct_flow_table_get_ref(struct tcf_ct_flow_table *ct_ft);
 
 static void tcf_ct_nf_get(struct nf_flowtable *ft)
 {
-	struct tcf_ct_flow_table *ct_ft =
-		container_of(ft, struct tcf_ct_flow_table, nf_ft);
+	struct tcf_ct_flow_table *ct_ft = ft->parent;
 
-	tcf_ct_flow_table_get_ref(ct_ft);
+	if (ct_ft)
+		tcf_ct_flow_table_get_ref(ct_ft);
 }
 
 static void tcf_ct_flow_table_put(struct tcf_ct_flow_table *ct_ft);
 
 static void tcf_ct_nf_put(struct nf_flowtable *ft)
 {
-	struct tcf_ct_flow_table *ct_ft =
-		container_of(ft, struct tcf_ct_flow_table, nf_ft);
+	struct tcf_ct_flow_table *ct_ft = ft->parent;
 
-	tcf_ct_flow_table_put(ct_ft);
+	if (ct_ft)
+		tcf_ct_flow_table_put(ct_ft);
 }
 
 static struct nf_flowtable_type flowtable_ct = {
@@ -327,6 +327,7 @@ static int tcf_ct_flow_table_get(struct net *net, struct tcf_ct_params *params)
 	ct_ft = kzalloc(sizeof(*ct_ft), GFP_KERNEL);
 	if (!ct_ft)
 		goto err_alloc;
+
 	refcount_set(&ct_ft->ref, 1);
 
 	ct_ft->zone = params->zone;
@@ -334,24 +335,30 @@ static int tcf_ct_flow_table_get(struct net *net, struct tcf_ct_params *params)
 	if (err)
 		goto err_insert;
 
-	ct_ft->nf_ft.type = &flowtable_ct;
-	ct_ft->nf_ft.flags |= NF_FLOWTABLE_HW_OFFLOAD |
-			      NF_FLOWTABLE_COUNTER;
-	err = nf_flow_table_init(&ct_ft->nf_ft);
+	ct_ft->nf_ft = kzalloc(sizeof(*ct_ft->nf_ft), GFP_KERNEL);
+	if (!ct_ft->nf_ft)
+		goto err_alloc;
+
+	ct_ft->nf_ft->parent = ct_ft;
+	ct_ft->nf_ft->type = &flowtable_ct;
+	ct_ft->nf_ft->flags |= NF_FLOWTABLE_HW_OFFLOAD |
+			       NF_FLOWTABLE_COUNTER;
+	err = nf_flow_table_init(ct_ft->nf_ft);
 	if (err)
 		goto err_init;
-	write_pnet(&ct_ft->nf_ft.net, net);
+	write_pnet(&ct_ft->nf_ft->net, net);
 
 	__module_get(THIS_MODULE);
 out_unlock:
 	params->ct_ft = ct_ft;
-	params->nf_ft = &ct_ft->nf_ft;
+	params->nf_ft = ct_ft->nf_ft;
 	mutex_unlock(&zones_mutex);
 
 	return 0;
 
 err_init:
 	rhashtable_remove_fast(&zones_ht, &ct_ft->node, zones_params);
+	kfree(ct_ft->nf_ft);
 err_insert:
 	kfree(ct_ft);
 err_alloc:
@@ -371,12 +378,13 @@ static void tcf_ct_flow_table_cleanup_work(struct work_struct *work)
 
 	ct_ft = container_of(to_rcu_work(work), struct tcf_ct_flow_table,
 			     rwork);
-	nf_flow_table_free(&ct_ft->nf_ft);
+	nf_flow_table_free(ct_ft->nf_ft);
 
-	block = &ct_ft->nf_ft.flow_block;
-	down_write(&ct_ft->nf_ft.flow_block_lock);
+	block = &ct_ft->nf_ft->flow_block;
+	down_write(&ct_ft->nf_ft->flow_block_lock);
 	WARN_ON(!list_empty(&block->cb_list));
-	up_write(&ct_ft->nf_ft.flow_block_lock);
+	up_write(&ct_ft->nf_ft->flow_block_lock);
+	kfree(ct_ft->nf_ft);
 	kfree(ct_ft);
 
 	module_put(THIS_MODULE);
@@ -439,7 +447,7 @@ static void tcf_ct_flow_table_add(struct tcf_ct_flow_table *ct_ft,
 		tcf_ct_flow_tc_ifidx(entry, act_ct_ext, FLOW_OFFLOAD_DIR_REPLY);
 	}
 
-	err = flow_offload_add(&ct_ft->nf_ft, entry);
+	err = flow_offload_add(ct_ft->nf_ft, entry);
 	if (err)
 		goto err_add;
 
@@ -647,7 +655,7 @@ static bool tcf_ct_flow_table_lookup(struct tcf_ct_params *p,
 				     struct sk_buff *skb,
 				     u8 family)
 {
-	struct nf_flowtable *nf_ft = &p->ct_ft->nf_ft;
+	struct nf_flowtable *nf_ft = p->ct_ft->nf_ft;
 	struct flow_offload_tuple_rhash *tuplehash;
 	struct flow_offload_tuple tuple = {};
 	enum ip_conntrack_info ctinfo;

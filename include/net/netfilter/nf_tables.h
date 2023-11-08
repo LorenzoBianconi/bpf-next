@@ -1423,8 +1423,14 @@ void nft_unregister_obj(struct nft_object_type *obj_type);
  *	@genmask: generation mask
  *	@use: number of references to this flow table
  * 	@handle: unique object handle
- *	@hook_list: hook list for hooks per net_device in flowtables
- *	@data: rhashtable and garbage collector
+ *	@hook_list: list of struct nft_hook
+ *	@ft: pointer to underlying nf_flowtable
+ *
+ *	This structure represents the low-level
+ *	nf_flowtable within the nf_tables framework.
+ *
+ *	nf_flowtable itself has no concept of 'tables', 'transactions',
+ *	etc. They do not even have names.
  */
 struct nft_flowtable {
 	struct list_head		list;
@@ -1435,9 +1441,8 @@ struct nft_flowtable {
 	u32				genmask:2;
 	u32				use;
 	u64				handle;
-	/* runtime data below here */
-	struct list_head		hook_list ____cacheline_aligned;
-	struct nf_flowtable		data;
+	struct list_head		hook_list;
+	struct nf_flowtable		*ft;
 };
 
 struct nft_flowtable *nft_flowtable_lookup(const struct nft_table *table,
