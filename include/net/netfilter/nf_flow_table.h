@@ -86,6 +86,7 @@ struct nf_flowtable {
 	struct rw_semaphore		flow_block_lock; /* Guards flow_block */
 	possible_net_t			net;
 	void				*parent;
+	struct rcu_work			rwork;
 };
 
 static inline bool nf_flowtable_hw_offload(struct nf_flowtable *flowtable)
