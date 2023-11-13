@@ -8536,8 +8536,9 @@ static int nf_tables_newflowtable(struct sk_buff *skb,
 
 	flowtable->ft = type->create(net, type);
 	if (!flowtable->ft) {
+		module_put(type->owner);
 		err = -ENOMEM;
-		goto err3;
+		goto err2;
 	}
 
 	if (nla[NFTA_FLOWTABLE_FLAGS]) {
@@ -8545,7 +8546,7 @@ static int nf_tables_newflowtable(struct sk_buff *skb,
 			ntohl(nla_get_be32(nla[NFTA_FLOWTABLE_FLAGS]));
 		if (flowtable->ft->flags & ~NFT_FLOWTABLE_MASK) {
 			err = -EOPNOTSUPP;
-			goto err3;
+			goto err_flowtable_parse_hooks;
 		}
 	}
 
@@ -8581,9 +8582,6 @@ err_flowtable_trans:
 	nft_hooks_destroy(&flowtable->hook_list);
 err_flowtable_parse_hooks:
 	flowtable->ft->type->free(flowtable->ft);
-err3:
-	kfree(flowtable->ft);
-	module_put(type->owner);
 err2:
 	kfree(flowtable->name);
 err1:
@@ -8958,7 +8956,6 @@ static void nf_tables_flowtable_destroy(struct nft_flowtable *flowtable)
 {
 	struct nft_hook *hook, *next;
 
-	flowtable->ft->type->free(flowtable->ft);
 	list_for_each_entry_safe(hook, next, &flowtable->hook_list, list) {
 		flowtable->ft->type->setup(flowtable->ft, hook->ops.dev,
 					   FLOW_BLOCK_UNBIND);
@@ -8966,8 +8963,7 @@ static void nf_tables_flowtable_destroy(struct nft_flowtable *flowtable)
 		kfree(hook);
 	}
 	kfree(flowtable->name);
-	module_put(flowtable->ft->type->owner);
-	kfree(flowtable->ft);
+	flowtable->ft->type->free(flowtable->ft);
 	kfree(flowtable);
 }
 
