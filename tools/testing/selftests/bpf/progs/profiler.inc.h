@@ -39,6 +39,12 @@
 
 #define KILL_DATA_ARRAY_SIZE 8
 
+struct syscall_trace_enter {
+	struct trace_entry	ent;
+	int			nr;
+	unsigned long		args[];
+};
+
 struct var_kill_data_arr_t {
 	struct var_kill_data_t array[KILL_DATA_ARRAY_SIZE];
 };
