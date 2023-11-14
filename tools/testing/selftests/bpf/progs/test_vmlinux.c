@@ -15,6 +15,12 @@ bool tp_btf_called = false;
 bool kprobe_called = false;
 bool fentry_called = false;
 
+struct syscall_trace_enter {
+	struct trace_entry	ent;
+	int			nr;
+	unsigned long		args[];
+};
+
 SEC("tp/syscalls/sys_enter_nanosleep")
 int handle__tp(struct syscall_trace_enter *args)
 {
