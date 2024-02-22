@@ -5,6 +5,7 @@ readonly NS0="ns0-$(mktemp -u XXXXXX)"
 readonly NS1="ns1-$(mktemp -u XXXXXX)"
 readonly infile="$(mktemp)"
 readonly outfile="$(mktemp)"
+readonly NFT_PATH=/home/lorenzo/workspace/nftables/src/
 
 xdp_flowtable_pid=""
 ret=1
@@ -12,7 +13,7 @@ ret=1
 setup_flowtable() {
 	sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1
 
-nft -f /dev/stdin <<EOF
+$NFT_PATH/nft -f /dev/stdin <<EOF
 table inet nat {
 	chain postrouting {
 		type nat hook postrouting priority filter; policy accept;
@@ -82,8 +83,8 @@ cleanup() {
 	{
 		rm -f "${infile}" "${outfile}"
 
-		nft delete table inet filter
-		nft delete table inet nat
+		$NFT_PATH/nft delete table inet filter
+		$NFT_PATH/nft delete table inet nat
 
 		ip link del v01
 		ip link del v10
