@@ -25,6 +25,7 @@ static int expected_stg = 0xeB9F;
 
 struct cb_opts {
 	const char *cc;
+	int map_fd;
 };
 
 static int settcpca(int fd, const char *tcp_ca)
@@ -38,53 +39,48 @@ static int settcpca(int fd, const char *tcp_ca)
 	return 0;
 }
 
-static void do_test(const struct network_helper_opts *opts,
-		    const struct bpf_map *sk_stg_map)
+static bool start_test(char *addr_str,
+		       const struct network_helper_opts *srv_opts,
+		       const struct network_helper_opts *cli_opts,
+		       int *srv_fd, int *cli_fd)
 {
-	struct cb_opts *cb_opts = (struct cb_opts *)opts->cb_opts;
-	int lfd = -1, fd = -1;
-	int err;
-
-	lfd = start_server_str(AF_INET6, SOCK_STREAM, NULL, 0, opts);
-	if (!ASSERT_NEQ(lfd, -1, "socket"))
-		return;
-
-	fd = socket(AF_INET6, SOCK_STREAM, 0);
-	if (!ASSERT_NEQ(fd, -1, "socket")) {
-		close(lfd);
-		return;
-	}
-
-	if (settcpca(fd, cb_opts->cc))
-		goto done;
-
-	if (sk_stg_map) {
-		err = bpf_map_update_elem(bpf_map__fd(sk_stg_map), &fd,
-					  &expected_stg, BPF_NOEXIST);
-		if (!ASSERT_OK(err, "bpf_map_update_elem(sk_stg_map)"))
-			goto done;
-	}
+	*srv_fd = start_server_str(AF_INET6, SOCK_STREAM, addr_str, 0, srv_opts);
+	if (!ASSERT_NEQ(*srv_fd, -1, "start_server_str"))
+		goto err;
 
 	/* connect to server */
-	err = connect_fd_to_fd(fd, lfd, 0);
-	if (!ASSERT_NEQ(err, -1, "connect"))
-		goto done;
+	*cli_fd = connect_to_fd_opts(*srv_fd, cli_opts);
+	if (!ASSERT_NEQ(*cli_fd, -1, "connect_to_fd_opts"))
+		goto err;
 
-	if (sk_stg_map) {
-		int tmp_stg;
+	return true;
 
-		err = bpf_map_lookup_elem(bpf_map__fd(sk_stg_map), &fd,
-					  &tmp_stg);
-		if (!ASSERT_ERR(err, "bpf_map_lookup_elem(sk_stg_map)") ||
-				!ASSERT_EQ(errno, ENOENT, "bpf_map_lookup_elem(sk_stg_map)"))
-			goto done;
+err:
+	if (*srv_fd != -1) {
+		close(*srv_fd);
+		*srv_fd = -1;
 	}
+	if (*cli_fd != -1) {
+		close(*cli_fd);
+		*cli_fd = -1;
+	}
+	return false;
+}
+
+static void do_test(const struct network_helper_opts *opts)
+{
+	int lfd = -1, fd = -1;
+
+	if (!start_test(NULL, opts, opts, &lfd, &fd))
+		goto done;
 
 	ASSERT_OK(send_recv_data(lfd, fd, total_bytes), "send_recv_data");
 
 done:
-	close(lfd);
-	close(fd);
+	if (lfd != -1)
+		close(lfd);
+	if (fd != -1)
+		close(fd);
 }
 
 static int cc_cb(int fd, void *opts)
@@ -116,12 +112,29 @@ static void test_cubic(void)
 		return;
 	}
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 
 	ASSERT_EQ(cubic_skel->bss->bpf_cubic_acked_called, 1, "pkts_acked called");
 
 	bpf_link__destroy(link);
 	bpf_cubic__destroy(cubic_skel);
+}
+
+static int stg_post_socket_cb(int fd, void *opts)
+{
+	struct cb_opts *cb_opts = (struct cb_opts *)opts;
+	int err;
+
+	err = settcpca(fd, cb_opts->cc);
+	if (err)
+		return err;
+
+	err = bpf_map_update_elem(cb_opts->map_fd, &fd,
+				  &expected_stg, BPF_NOEXIST);
+	if (!ASSERT_OK(err, "bpf_map_update_elem(sk_stg_map)"))
+		return err;
+
+	return 0;
 }
 
 static void test_dctcp(void)
@@ -133,6 +146,11 @@ static void test_dctcp(void)
 		.post_socket_cb	= cc_cb,
 		.cb_opts	= &cb_opts,
 	};
+	struct network_helper_opts cli_opts = {
+		.post_socket_cb	= stg_post_socket_cb,
+		.cb_opts	= &cb_opts,
+	};
+	int lfd = -1, fd = -1, tmp_stg, err;
 	struct bpf_dctcp *dctcp_skel;
 	struct bpf_link *link;
 
@@ -146,11 +164,25 @@ static void test_dctcp(void)
 		return;
 	}
 
-	do_test(&opts, dctcp_skel->maps.sk_stg_map);
+	cb_opts.map_fd = bpf_map__fd(dctcp_skel->maps.sk_stg_map);
+	if (!start_test(NULL, &opts, &cli_opts, &lfd, &fd))
+		goto done;
+
+	err = bpf_map_lookup_elem(cb_opts.map_fd, &fd, &tmp_stg);
+	if (!ASSERT_ERR(err, "bpf_map_lookup_elem(sk_stg_map)") ||
+			!ASSERT_EQ(errno, ENOENT, "bpf_map_lookup_elem(sk_stg_map)"))
+		goto done;
+
+	ASSERT_OK(send_recv_data(lfd, fd, total_bytes), "send_recv_data");
 	ASSERT_EQ(dctcp_skel->bss->stg_result, expected_stg, "stg_result");
 
+done:
 	bpf_link__destroy(link);
 	bpf_dctcp__destroy(dctcp_skel);
+	if (lfd != -1)
+		close(lfd);
+	if (fd != -1)
+		close(fd);
 }
 
 static char *err_str;
@@ -198,16 +230,21 @@ static void test_invalid_license(void)
 static void test_dctcp_fallback(void)
 {
 	int err, lfd = -1, cli_fd = -1, srv_fd = -1;
-	struct network_helper_opts opts = {
-		.post_socket_cb	= cc_cb,
-	};
 	struct bpf_dctcp *dctcp_skel;
 	struct bpf_link *link = NULL;
 	struct cb_opts dctcp = {
 		.cc = "bpf_dctcp",
 	};
+	struct network_helper_opts srv_opts = {
+		.post_socket_cb = cc_cb,
+		.cb_opts = &dctcp,
+	};
 	struct cb_opts cubic = {
 		.cc = "cubic",
+	};
+	struct network_helper_opts cli_opts = {
+		.post_socket_cb = cc_cb,
+		.cb_opts = &cubic,
 	};
 	char srv_cc[16];
 	socklen_t cc_len = sizeof(srv_cc);
@@ -223,14 +260,7 @@ static void test_dctcp_fallback(void)
 	if (!ASSERT_OK_PTR(link, "dctcp link"))
 		goto done;
 
-	opts.cb_opts = &dctcp;
-	lfd = start_server_str(AF_INET6, SOCK_STREAM, "::1", 0, &opts);
-	if (!ASSERT_GE(lfd, 0, "lfd"))
-		goto done;
-
-	opts.cb_opts = &cubic;
-	cli_fd = connect_to_fd_opts(lfd, &opts);
-	if (!ASSERT_GE(cli_fd, 0, "cli_fd"))
+	if (!start_test("::1", &srv_opts, &cli_opts, &lfd, &cli_fd))
 		goto done;
 
 	srv_fd = accept(lfd, NULL, 0);
@@ -350,14 +380,14 @@ static void test_update_ca(void)
 	link = bpf_map__attach_struct_ops(skel->maps.ca_update_1);
 	ASSERT_OK_PTR(link, "attach_struct_ops");
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 	saved_ca1_cnt = skel->bss->ca1_cnt;
 	ASSERT_GT(saved_ca1_cnt, 0, "ca1_ca1_cnt");
 
 	err = bpf_link__update_map(link, skel->maps.ca_update_2);
 	ASSERT_OK(err, "update_map");
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 	ASSERT_EQ(skel->bss->ca1_cnt, saved_ca1_cnt, "ca2_ca1_cnt");
 	ASSERT_GT(skel->bss->ca2_cnt, 0, "ca2_ca2_cnt");
 
@@ -386,14 +416,14 @@ static void test_update_wrong(void)
 	link = bpf_map__attach_struct_ops(skel->maps.ca_update_1);
 	ASSERT_OK_PTR(link, "attach_struct_ops");
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 	saved_ca1_cnt = skel->bss->ca1_cnt;
 	ASSERT_GT(saved_ca1_cnt, 0, "ca1_ca1_cnt");
 
 	err = bpf_link__update_map(link, skel->maps.ca_wrong);
 	ASSERT_ERR(err, "update_map");
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 	ASSERT_GT(skel->bss->ca1_cnt, saved_ca1_cnt, "ca2_ca1_cnt");
 
 	bpf_link__destroy(link);
@@ -423,7 +453,7 @@ static void test_mixed_links(void)
 	link = bpf_map__attach_struct_ops(skel->maps.ca_update_1);
 	ASSERT_OK_PTR(link, "attach_struct_ops");
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 	ASSERT_GT(skel->bss->ca1_cnt, 0, "ca1_ca1_cnt");
 
 	err = bpf_link__update_map(link, skel->maps.ca_no_link);
@@ -530,7 +560,7 @@ static void test_cc_cubic(void)
 		return;
 	}
 
-	do_test(&opts, NULL);
+	do_test(&opts);
 
 	bpf_link__destroy(link);
 	bpf_cc_cubic__destroy(cc_cubic_skel);
