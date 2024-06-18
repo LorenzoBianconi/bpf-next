@@ -28,7 +28,6 @@
 
 #include <linux/sched.h>
 #include <linux/workqueue.h>
-#include <linux/kthread.h>
 #include <linux/completion.h>
 #include <trace/events/xdp.h>
 #include <linux/btf_ids.h>
@@ -62,14 +61,15 @@ struct bpf_cpu_map_entry {
 	/* XDP can run multiple RX-ring queues, need __percpu enqueue store */
 	struct xdp_bulk_queue __percpu *bulkq;
 
-	/* Queue with potential multi-producers, and single-consumer kthread */
+	/* Queue with potential multi-producers
+	 * and single-consumer NAPI-kthread
+	 */
 	struct ptr_ring *queue;
-	struct task_struct *kthread;
+	struct napi_struct napi;
 
 	struct bpf_cpumap_val value;
 	struct bpf_prog *prog;
 
-	struct completion kthread_running;
 	struct rcu_work free_work;
 };
 
@@ -77,6 +77,7 @@ struct bpf_cpu_map {
 	struct bpf_map map;
 	/* Below members specific for map type */
 	struct bpf_cpu_map_entry __rcu **cpu_map;
+	struct net_device *napi_dev; /* needed for cpumap napi */
 };
 
 static DEFINE_PER_CPU(struct list_head, cpu_map_flush_list);
@@ -103,16 +104,30 @@ static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
 
 	bpf_map_init_from_attr(&cmap->map, attr);
 
+	cmap->napi_dev = bpf_map_area_alloc(sizeof(*cmap->napi_dev),
+					    NUMA_NO_NODE);
+	if (!cmap->napi_dev)
+		goto error_napi_dev;
+
+	init_dummy_netdev(cmap->napi_dev);
+	strcpy(cmap->napi_dev->name, "cpumap");
+	cmap->napi_dev->threaded = true;
+
 	/* Alloc array for possible remote "destination" CPUs */
 	cmap->cpu_map = bpf_map_area_alloc(cmap->map.max_entries *
 					   sizeof(struct bpf_cpu_map_entry *),
 					   cmap->map.numa_node);
-	if (!cmap->cpu_map) {
-		bpf_map_area_free(cmap);
-		return ERR_PTR(-ENOMEM);
-	}
+	if (!cmap->cpu_map)
+		goto error_cpu_map;
 
 	return &cmap->map;
+
+error_cpu_map:
+	bpf_map_area_free(cmap->napi_dev);
+error_napi_dev:
+	bpf_map_area_free(cmap);
+
+	return ERR_PTR(-ENOMEM);
 }
 
 static void __cpu_map_ring_cleanup(struct ptr_ring *ring)
@@ -260,63 +275,44 @@ static int cpu_map_bpf_prog_run(struct bpf_cpu_map_entry *rcpu, void **frames,
 	return nframes;
 }
 
-static int cpu_map_kthread_run(void *data)
+static int cpu_map_poll(struct napi_struct *napi, int budget)
 {
-	struct bpf_cpu_map_entry *rcpu = data;
-	unsigned long last_qs = jiffies;
+	struct xdp_cpumap_stats stats = {}; /* zero stats */
+	unsigned int kmem_alloc_drops = 0;
+	struct bpf_cpu_map_entry *rcpu;
+	int done = 0;
 
-	complete(&rcpu->kthread_running);
-	set_current_state(TASK_INTERRUPTIBLE);
+	rcu_read_lock();
 
-	/* When kthread gives stop order, then rcpu have been disconnected
-	 * from map, thus no new packets can enter. Remaining in-flight
-	 * per CPU stored packets are flushed to this queue.  Wait honoring
-	 * kthread_stop signal until queue is empty.
-	 */
-	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
-		struct xdp_cpumap_stats stats = {}; /* zero stats */
-		unsigned int kmem_alloc_drops = 0, sched = 0;
-		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
-		int i, n, m, nframes, xdp_n;
+	rcpu = container_of(napi, struct bpf_cpu_map_entry, napi);
+	while (done < budget) {
+		int n, i, xdp_n = 0, nframes;
 		void *frames[CPUMAP_BATCH];
+		struct sk_buff *skb, *tmp;
 		void *skbs[CPUMAP_BATCH];
 		LIST_HEAD(list);
 
-		/* Release CPU reschedule checks */
-		if (__ptr_ring_empty(rcpu->queue)) {
-			set_current_state(TASK_INTERRUPTIBLE);
-			/* Recheck to avoid lost wake-up */
-			if (__ptr_ring_empty(rcpu->queue)) {
-				schedule();
-				sched = 1;
-				last_qs = jiffies;
-			} else {
-				__set_current_state(TASK_RUNNING);
-			}
-		} else {
-			rcu_softirq_qs_periodic(last_qs);
-			sched = cond_resched();
-		}
-
+		if (__ptr_ring_empty(rcpu->queue))
+			break;
 		/*
 		 * The bpf_cpu_map_entry is single consumer, with this
 		 * kthread CPU pinned. Lockless access to ptr_ring
 		 * consume side valid as no-resize allowed of queue.
 		 */
-		n = __ptr_ring_consume_batched(rcpu->queue, frames,
-					       CPUMAP_BATCH);
-		for (i = 0, xdp_n = 0; i < n; i++) {
+		n = min(budget -  done, CPUMAP_BATCH);
+		n = __ptr_ring_consume_batched(rcpu->queue, frames, n);
+		done += n;
+
+		for (i = 0; i < n; i++) {
 			void *f = frames[i];
 			struct page *page;
 
 			if (unlikely(__ptr_test_bit(0, &f))) {
-				struct sk_buff *skb = f;
-
+				skb = f;
 				__ptr_clear_bit(0, &skb);
 				list_add_tail(&skb->list, &list);
 				continue;
 			}
-
 			frames[xdp_n++] = f;
 			page = virt_to_page(f);
 
@@ -328,23 +324,23 @@ static int cpu_map_kthread_run(void *data)
 		}
 
 		/* Support running another XDP prog on this CPU */
-		nframes = cpu_map_bpf_prog_run(rcpu, frames, xdp_n, &stats, &list);
+		nframes = cpu_map_bpf_prog_run(rcpu, frames, xdp_n, &stats,
+					       &list);
 		if (nframes) {
-			m = kmem_cache_alloc_bulk(net_hotdata.skbuff_cache,
-						  gfp, nframes, skbs);
-			if (unlikely(m == 0)) {
+			int m = kmem_cache_alloc_bulk(net_hotdata.skbuff_cache,
+						      __GFP_ZERO | GFP_ATOMIC,
+						      nframes, skbs);
+			if (unlikely(!m)) {
 				for (i = 0; i < nframes; i++)
 					skbs[i] = NULL; /* effect: xdp_return_frame */
 				kmem_alloc_drops += nframes;
 			}
 		}
 
-		local_bh_disable();
 		for (i = 0; i < nframes; i++) {
 			struct xdp_frame *xdpf = frames[i];
-			struct sk_buff *skb = skbs[i];
 
-			skb = __xdp_build_skb_from_frame(xdpf, skb,
+			skb = __xdp_build_skb_from_frame(xdpf, skbs[i],
 							 xdpf->dev_rx);
 			if (!skb) {
 				xdp_return_frame(xdpf);
@@ -353,17 +349,22 @@ static int cpu_map_kthread_run(void *data)
 
 			list_add_tail(&skb->list, &list);
 		}
-		netif_receive_skb_list(&list);
 
-		/* Feedback loop via tracepoint */
-		trace_xdp_cpumap_kthread(rcpu->map_id, n, kmem_alloc_drops,
-					 sched, &stats);
-
-		local_bh_enable(); /* resched point, may call do_softirq() */
+		list_for_each_entry_safe(skb, tmp, &list, list) {
+			skb_list_del_init(skb);
+			napi_gro_receive(napi, skb);
+		}
 	}
-	__set_current_state(TASK_RUNNING);
 
-	return 0;
+	rcu_read_unlock();
+
+	/* Feedback loop via tracepoint */
+	trace_xdp_cpumap_kthread(rcpu->map_id, done, kmem_alloc_drops, 0, &stats);
+
+	if (done < budget)
+		napi_complete_done(napi, done);
+
+	return done;
 }
 
 static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu,
@@ -391,6 +392,7 @@ static struct bpf_cpu_map_entry *
 __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,
 		      u32 cpu)
 {
+	struct bpf_cpu_map *cmap = container_of(map, struct bpf_cpu_map, map);
 	int numa, err, i, fd = value->bpf_prog.fd;
 	gfp_t gfp = GFP_KERNEL | __GFP_NOWARN;
 	struct bpf_cpu_map_entry *rcpu;
@@ -431,29 +433,12 @@ __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,
 	if (fd > 0 && __cpu_map_load_bpf_program(rcpu, map, fd))
 		goto free_ptr_ring;
 
-	/* Setup kthread */
-	init_completion(&rcpu->kthread_running);
-	rcpu->kthread = kthread_create_on_node(cpu_map_kthread_run, rcpu, numa,
-					       "cpumap/%d/map:%d", cpu,
-					       map->id);
-	if (IS_ERR(rcpu->kthread))
-		goto free_prog;
-
-	/* Make sure kthread runs on a single CPU */
-	kthread_bind(rcpu->kthread, cpu);
-	wake_up_process(rcpu->kthread);
-
-	/* Make sure kthread has been running, so kthread_stop() will not
-	 * stop the kthread prematurely and all pending frames or skbs
-	 * will be handled by the kthread before kthread_stop() returns.
-	 */
-	wait_for_completion(&rcpu->kthread_running);
+	__netif_napi_add_weight(cmap->napi_dev, &rcpu->napi, cpu_map_poll,
+				NAPI_POLL_WEIGHT, cpu);
+	napi_enable(&rcpu->napi);
 
 	return rcpu;
 
-free_prog:
-	if (rcpu->prog)
-		bpf_prog_put(rcpu->prog);
 free_ptr_ring:
 	ptr_ring_cleanup(rcpu->queue, NULL);
 free_queue:
@@ -475,12 +460,7 @@ static void __cpu_map_entry_free(struct work_struct *work)
 	 * find this entry.
 	 */
 	rcpu = container_of(to_rcu_work(work), struct bpf_cpu_map_entry, free_work);
-
-	/* kthread_stop will wake_up_process and wait for it to complete.
-	 * cpu_map_kthread_run() makes sure the pointer ring is empty
-	 * before exiting.
-	 */
-	kthread_stop(rcpu->kthread);
+	netif_napi_del(&rcpu->napi);
 
 	if (rcpu->prog)
 		bpf_prog_put(rcpu->prog);
@@ -497,8 +477,8 @@ static void __cpu_map_entry_free(struct work_struct *work)
  * __cpu_map_entry_free() in a separate workqueue after waiting for an RCU grace
  * period. This means that (a) all pending enqueue and flush operations have
  * completed (because of the RCU callback), and (b) we are in a workqueue
- * context where we can stop the kthread and wait for it to exit before freeing
- * everything.
+ * context where we can stop the NAPI-kthread and wait for it to exit before
+ * freeing everything.
  */
 static void __cpu_map_entry_replace(struct bpf_cpu_map *cmap,
 				    u32 key_cpu, struct bpf_cpu_map_entry *rcpu)
@@ -588,9 +568,10 @@ static void cpu_map_free(struct bpf_map *map)
 		if (!rcpu)
 			continue;
 
-		/* Stop kthread and cleanup entry directly */
+		/* Stop NAPI-kthread and cleanup entry directly */
 		__cpu_map_entry_free(&rcpu->free_work.work);
 	}
+	bpf_map_area_free(cmap->napi_dev);
 	bpf_map_area_free(cmap->cpu_map);
 	bpf_map_area_free(cmap);
 }
@@ -750,7 +731,7 @@ int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
 	if (ret < 0)
 		goto trace;
 
-	wake_up_process(rcpu->kthread);
+	napi_schedule(&rcpu->napi);
 trace:
 	trace_xdp_cpumap_enqueue(rcpu->map_id, !ret, !!ret, rcpu->cpu);
 	return ret;
@@ -763,9 +744,7 @@ void __cpu_map_flush(void)
 
 	list_for_each_entry_safe(bq, tmp, flush_list, flush_node) {
 		bq_flush_to_queue(bq);
-
-		/* If already running, costs spin_lock_irqsave + smb_mb */
-		wake_up_process(bq->obj->kthread);
+		napi_schedule(&bq->obj->napi);
 	}
 }
 

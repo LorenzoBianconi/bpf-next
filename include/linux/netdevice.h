@@ -375,6 +375,7 @@ struct napi_struct {
 	struct list_head	dev_list;
 	struct hlist_node	napi_hash_node;
 	int			irq;
+	int			thread_cpuid;
 };
 
 enum {
@@ -2619,8 +2620,17 @@ static inline void netif_napi_set_irq(struct napi_struct *napi, int irq)
  */
 #define NAPI_POLL_WEIGHT 64
 
-void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
-			   int (*poll)(struct napi_struct *, int), int weight);
+void __netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
+			     int (*poll)(struct napi_struct *, int),
+			     int weight, int thread_cpuid);
+
+static inline void netif_napi_add_weight(struct net_device *dev,
+					 struct napi_struct *napi,
+					 int (*poll)(struct napi_struct *, int),
+					 int weight)
+{
+	__netif_napi_add_weight(dev, napi, poll, weight, -1);
+}
 
 /**
  * netif_napi_add() - initialize a NAPI context

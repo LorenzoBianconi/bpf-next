@@ -1421,12 +1421,22 @@ static int napi_kthread_create(struct napi_struct *n)
 {
 	int err = 0;
 
+
 	/* Create and wake up the kthread once to put it in
 	 * TASK_INTERRUPTIBLE mode to avoid the blocked task
 	 * warning and work with loadavg.
 	 */
-	n->thread = kthread_run(napi_threaded_poll, n, "napi/%s-%d",
-				n->dev->name, n->napi_id);
+	if (n->thread_cpuid > 0) {
+		char s[32];
+
+		snprintf(s, 32, "napi/%s-%d", n->dev->name, n->thread_cpuid);
+		n->thread = kthread_run_on_cpu(napi_threaded_poll, n,
+					       n->thread_cpuid, s);
+	} else {
+		n->thread = kthread_run(napi_threaded_poll, n, "napi/%s-%d",
+					n->dev->name, n->napi_id);
+	}
+
 	if (IS_ERR(n->thread)) {
 		err = PTR_ERR(n->thread);
 		pr_err("kthread_run failed with err %d\n", err);
@@ -6588,8 +6598,9 @@ void netif_queue_set_napi(struct net_device *dev, unsigned int queue_index,
 }
 EXPORT_SYMBOL(netif_queue_set_napi);
 
-void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
-			   int (*poll)(struct napi_struct *, int), int weight)
+void __netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
+			     int (*poll)(struct napi_struct *, int),
+			     int weight, int thread_cpuid)
 {
 	if (WARN_ON(test_and_set_bit(NAPI_STATE_LISTED, &napi->state)))
 		return;
@@ -6612,6 +6623,7 @@ void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
 	napi->poll_owner = -1;
 #endif
 	napi->list_owner = -1;
+	napi->thread_cpuid = thread_cpuid;
 	set_bit(NAPI_STATE_SCHED, &napi->state);
 	set_bit(NAPI_STATE_NPSVC, &napi->state);
 	list_add_rcu(&napi->dev_list, &dev->napi_list);
@@ -6625,7 +6637,7 @@ void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
 		dev->threaded = false;
 	netif_napi_set_irq(napi, -1);
 }
-EXPORT_SYMBOL(netif_napi_add_weight);
+EXPORT_SYMBOL(__netif_napi_add_weight);
 
 void napi_disable(struct napi_struct *n)
 {
