@@ -25,6 +25,7 @@
 #include <linux/ptr_ring.h>
 #include <net/xdp.h>
 #include <net/hotdata.h>
+#include <net/gro_cells.h>
 
 #include <linux/sched.h>
 #include <linux/workqueue.h>
@@ -47,6 +48,11 @@
 struct bpf_cpu_map_entry;
 struct bpf_cpu_map;
 
+struct bpf_cpu_map_gro {
+	struct gro_cells cells;
+	struct net_device *dev;
+};
+
 struct xdp_bulk_queue {
 	void *q[CPU_MAP_BULK_SIZE];
 	struct list_head flush_node;
@@ -56,6 +62,8 @@ struct xdp_bulk_queue {
 
 /* Struct for every remote "destination" CPU in map */
 struct bpf_cpu_map_entry {
+	struct bpf_cpu_map *cmap;
+
 	u32 cpu;    /* kthread CPU and map index */
 	int map_id; /* Back reference to map */
 
@@ -77,6 +85,8 @@ struct bpf_cpu_map {
 	struct bpf_map map;
 	/* Below members specific for map type */
 	struct bpf_cpu_map_entry __rcu **cpu_map;
+
+	struct bpf_cpu_map_gro gro;
 };
 
 static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
@@ -101,16 +111,33 @@ static struct bpf_map *cpu_map_alloc(union bpf_attr *attr)
 
 	bpf_map_init_from_attr(&cmap->map, attr);
 
+	cmap->gro.dev = bpf_map_area_alloc(sizeof(*cmap->gro.dev),
+					   NUMA_NO_NODE);
+	if (!cmap->gro.dev)
+		goto error_gro_dev;
+
+	init_dummy_netdev(cmap->gro.dev);
+	strcpy(cmap->gro.dev->name, "cpumap");
+	if (gro_cells_init(&cmap->gro.cells, cmap->gro.dev))
+		goto error_gro_cells;
+
 	/* Alloc array for possible remote "destination" CPUs */
 	cmap->cpu_map = bpf_map_area_alloc(cmap->map.max_entries *
 					   sizeof(struct bpf_cpu_map_entry *),
 					   cmap->map.numa_node);
-	if (!cmap->cpu_map) {
-		bpf_map_area_free(cmap);
-		return ERR_PTR(-ENOMEM);
-	}
+	if (!cmap->cpu_map)
+		goto error_cpu_map;
 
 	return &cmap->map;
+
+error_cpu_map:
+	gro_cells_destroy(&cmap->gro.cells);
+error_gro_cells:
+	bpf_map_area_free(cmap->gro.dev);
+error_gro_dev:
+	bpf_map_area_free(cmap);
+
+	return ERR_PTR(-ENOMEM);
 }
 
 static void __cpu_map_ring_cleanup(struct ptr_ring *ring)
@@ -277,9 +304,11 @@ static int cpu_map_kthread_run(void *data)
 	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
 		struct xdp_cpumap_stats stats = {}; /* zero stats */
 		unsigned int kmem_alloc_drops = 0, sched = 0;
+		struct bpf_cpu_map *cmap = rcpu->cmap;
 		gfp_t gfp = __GFP_ZERO | GFP_ATOMIC;
 		int i, n, m, nframes, xdp_n;
 		void *frames[CPUMAP_BATCH];
+		struct sk_buff *skb, *tmp;
 		void *skbs[CPUMAP_BATCH];
 		LIST_HEAD(list);
 
@@ -311,8 +340,7 @@ static int cpu_map_kthread_run(void *data)
 			struct page *page;
 
 			if (unlikely(__ptr_test_bit(0, &f))) {
-				struct sk_buff *skb = f;
-
+				skb = f;
 				__ptr_clear_bit(0, &skb);
 				list_add_tail(&skb->list, &list);
 				continue;
@@ -343,9 +371,8 @@ static int cpu_map_kthread_run(void *data)
 		local_bh_disable();
 		for (i = 0; i < nframes; i++) {
 			struct xdp_frame *xdpf = frames[i];
-			struct sk_buff *skb = skbs[i];
 
-			skb = __xdp_build_skb_from_frame(xdpf, skb,
+			skb = __xdp_build_skb_from_frame(xdpf, skbs[i],
 							 xdpf->dev_rx);
 			if (!skb) {
 				xdp_return_frame(xdpf);
@@ -354,7 +381,11 @@ static int cpu_map_kthread_run(void *data)
 
 			list_add_tail(&skb->list, &list);
 		}
-		netif_receive_skb_list(&list);
+
+		list_for_each_entry_safe(skb, tmp, &list, list) {
+			skb_list_del_init(skb);
+			gro_cells_receive(&cmap->gro.cells, skb);
+		}
 
 		/* Feedback loop via tracepoint */
 		trace_xdp_cpumap_kthread(rcpu->map_id, n, kmem_alloc_drops,
@@ -425,6 +456,7 @@ __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,
 	if (err)
 		goto free_queue;
 
+	rcpu->cmap   = container_of(map, struct bpf_cpu_map, map);
 	rcpu->cpu    = cpu;
 	rcpu->map_id = map->id;
 	rcpu->value.qsize  = value->qsize;
@@ -592,6 +624,9 @@ static void cpu_map_free(struct bpf_map *map)
 		/* Stop kthread and cleanup entry directly */
 		__cpu_map_entry_free(&rcpu->free_work.work);
 	}
+
+	gro_cells_destroy(&cmap->gro.cells);
+	bpf_map_area_free(cmap->gro.dev);
 	bpf_map_area_free(cmap->cpu_map);
 	bpf_map_area_free(cmap);
 }
