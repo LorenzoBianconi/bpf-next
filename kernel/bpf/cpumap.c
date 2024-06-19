@@ -69,6 +69,9 @@ struct bpf_cpu_map_entry {
 	struct bpf_cpumap_val value;
 	struct bpf_prog *prog;
 
+	struct napi_struct napi;
+	struct list_head napi_skbs;
+
 	struct completion kthread_running;
 	struct rcu_work free_work;
 };
@@ -281,7 +284,6 @@ static int cpu_map_kthread_run(void *data)
 		int i, n, m, nframes, xdp_n;
 		void *frames[CPUMAP_BATCH];
 		void *skbs[CPUMAP_BATCH];
-		LIST_HEAD(list);
 
 		/* Release CPU reschedule checks */
 		if (__ptr_ring_empty(rcpu->queue)) {
@@ -314,7 +316,7 @@ static int cpu_map_kthread_run(void *data)
 				struct sk_buff *skb = f;
 
 				__ptr_clear_bit(0, &skb);
-				list_add_tail(&skb->list, &list);
+				list_add_tail(&skb->list, &rcpu->napi_skbs);
 				continue;
 			}
 
@@ -329,7 +331,8 @@ static int cpu_map_kthread_run(void *data)
 		}
 
 		/* Support running another XDP prog on this CPU */
-		nframes = cpu_map_bpf_prog_run(rcpu, frames, xdp_n, &stats, &list);
+		nframes = cpu_map_bpf_prog_run(rcpu, frames, xdp_n, &stats,
+					       &rcpu->napi_skbs);
 		if (nframes) {
 			m = kmem_cache_alloc_bulk(net_hotdata.skbuff_cache,
 						  gfp, nframes, skbs);
@@ -352,9 +355,9 @@ static int cpu_map_kthread_run(void *data)
 				continue;
 			}
 
-			list_add_tail(&skb->list, &list);
+			list_add_tail(&skb->list, &rcpu->napi_skbs);
 		}
-		netif_receive_skb_list(&list);
+		napi_schedule(&rcpu->napi);
 
 		/* Feedback loop via tracepoint */
 		trace_xdp_cpumap_kthread(rcpu->map_id, n, kmem_alloc_drops,
@@ -386,6 +389,26 @@ static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu,
 	rcpu->prog = prog;
 
 	return 0;
+}
+
+static int cpu_map_poll(struct napi_struct *napi, int budget)
+{
+	struct bpf_cpu_map_entry *rcpu;
+	int i;
+
+	rcpu = container_of(napi, struct bpf_cpu_map_entry, napi);
+	for (i = 0; i < budget && !list_empty(&rcpu->napi_skbs); i++) {
+		struct sk_buff *skb = list_first_entry(&rcpu->napi_skbs,
+						       struct sk_buff, list);
+
+		skb_list_del_init(skb);
+		napi_gro_receive(napi, skb);
+	}
+
+	if (i < budget)
+		napi_complete_done(napi, i);
+
+	return i;
 }
 
 static struct bpf_cpu_map_entry *
@@ -429,6 +452,9 @@ __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,
 	rcpu->map_id = map->id;
 	rcpu->value.qsize  = value->qsize;
 
+	napi_add_weight(&rcpu->napi, cpu_map_poll, NAPI_POLL_WEIGHT);
+	napi_enable(&rcpu->napi);
+
 	if (fd > 0 && __cpu_map_load_bpf_program(rcpu, map, fd))
 		goto free_ptr_ring;
 
@@ -469,6 +495,7 @@ free_rcu:
 static void __cpu_map_entry_free(struct work_struct *work)
 {
 	struct bpf_cpu_map_entry *rcpu;
+	struct sk_buff *skb, *tmp;
 
 	/* This cpu_map_entry have been disconnected from map and one
 	 * RCU grace-period have elapsed. Thus, XDP cannot queue any
@@ -476,6 +503,9 @@ static void __cpu_map_entry_free(struct work_struct *work)
 	 * find this entry.
 	 */
 	rcpu = container_of(to_rcu_work(work), struct bpf_cpu_map_entry, free_work);
+
+	napi_disable(&rcpu->napi);
+	__netif_napi_del(&rcpu->napi);
 
 	/* kthread_stop will wake_up_process and wait for it to complete.
 	 * cpu_map_kthread_run() makes sure the pointer ring is empty
@@ -485,6 +515,13 @@ static void __cpu_map_entry_free(struct work_struct *work)
 
 	if (rcpu->prog)
 		bpf_prog_put(rcpu->prog);
+
+	/* Free pending skbs in napi_skbs list */
+	list_for_each_entry_safe(skb, tmp, &rcpu->napi_skbs, list) {
+		skb_list_del_init(skb);
+		kfree_skb(skb);
+	}
+
 	/* The queue should be empty at this point */
 	__cpu_map_ring_cleanup(rcpu->queue);
 	ptr_ring_cleanup(rcpu->queue, NULL);
