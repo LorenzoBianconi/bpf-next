@@ -6638,8 +6638,8 @@ void netif_queue_set_napi(struct net_device *dev, unsigned int queue_index,
 }
 EXPORT_SYMBOL(netif_queue_set_napi);
 
-void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
-			   int (*poll)(struct napi_struct *, int), int weight)
+void napi_add_weight(struct napi_struct *napi,
+		     int (*poll)(struct napi_struct *, int), int weight)
 {
 	if (WARN_ON(test_and_set_bit(NAPI_STATE_LISTED, &napi->state)))
 		return;
@@ -6653,27 +6653,36 @@ void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
 	INIT_LIST_HEAD(&napi->rx_list);
 	napi->rx_count = 0;
 	napi->poll = poll;
-	if (weight > NAPI_POLL_WEIGHT)
-		netdev_err_once(dev, "%s() called with weight %d\n", __func__,
-				weight);
 	napi->weight = weight;
-	napi->dev = dev;
+	napi->dev = NULL;
 #ifdef CONFIG_NETPOLL
 	napi->poll_owner = -1;
 #endif
 	napi->list_owner = -1;
 	set_bit(NAPI_STATE_SCHED, &napi->state);
 	set_bit(NAPI_STATE_NPSVC, &napi->state);
-	list_add_rcu(&napi->dev_list, &dev->napi_list);
 	napi_hash_add(napi);
 	napi_get_frags_check(napi);
+	netif_napi_set_irq(napi, -1);
+}
+
+void netif_napi_add_weight(struct net_device *dev, struct napi_struct *napi,
+			   int (*poll)(struct napi_struct *, int), int weight)
+{
+	if (weight > NAPI_POLL_WEIGHT)
+		netdev_err_once(dev, "%s() called with weight %d\n", __func__,
+				weight);
+
+	napi_add_weight(napi, poll, weight);
+	napi->dev = dev;
+	list_add_rcu(&napi->dev_list, &dev->napi_list);
+
 	/* Create kthread for this napi if dev->threaded is set.
 	 * Clear dev->threaded if kthread creation failed so that
 	 * threaded mode will not be enabled in napi_enable().
 	 */
 	if (dev->threaded && napi_kthread_create(napi))
 		dev->threaded = false;
-	netif_napi_set_irq(napi, -1);
 }
 EXPORT_SYMBOL(netif_napi_add_weight);
 
