@@ -489,6 +489,9 @@ int main(int argc, char **argv)
 	if (redir_interface)
 		skel->rodata->to_match[0] = if_nametoindex(redir_interface);
 
+	bpf_program__set_ifindex(prog, ifindex);
+	bpf_program__set_flags(prog, BPF_F_XDP_DEV_BOUND_ONLY);
+
 	ret = xdp_redirect_cpu__load(skel);
 	if (ret < 0) {
 		fprintf(stderr, "Failed to xdp_redirect_cpu__load: %s\n",
