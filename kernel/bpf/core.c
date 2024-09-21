@@ -2312,8 +2312,8 @@ bool bpf_prog_map_compatible(struct bpf_map *map,
 	 * in the case of devmap and cpumap). Until device checks
 	 * are implemented, prohibit adding dev-bound programs to program maps.
 	 */
-	if (bpf_prog_is_dev_bound(aux))
-		return false;
+	//if (bpf_prog_is_dev_bound(aux))
+	//	return false;
 
 	spin_lock(&map->owner.lock);
 	if (!map->owner.type) {
