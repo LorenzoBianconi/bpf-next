@@ -7,6 +7,11 @@
 #include "xdp_sample_shared.h"
 #include "hash_func01.h"
 
+extern int bpf_xdp_metadata_rx_hash(const struct xdp_md *ctx, __u32 *hash,
+				    enum xdp_rss_hash_type *rss_type) __ksym;
+extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md *ctx,
+					 __u64 *timestamp) __ksym;
+
 /* Special map type that can XDP_REDIRECT frames to another CPU */
 struct {
 	__uint(type, BPF_MAP_TYPE_CPUMAP);
@@ -139,7 +144,7 @@ int get_proto_ipv6(struct xdp_md *ctx, u64 nh_off)
 	return ip6h->nexthdr;
 }
 
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum0_no_touch(struct xdp_md *ctx)
 {
 	u32 key = bpf_get_smp_processor_id();
@@ -166,7 +171,7 @@ int  xdp_prognum0_no_touch(struct xdp_md *ctx)
 	return bpf_redirect_map(&cpu_map, cpu_dest, 0);
 }
 
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum1_touch_data(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -208,7 +213,7 @@ int  xdp_prognum1_touch_data(struct xdp_md *ctx)
 	return bpf_redirect_map(&cpu_map, cpu_dest, 0);
 }
 
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum2_round_robin(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -253,7 +258,7 @@ int  xdp_prognum2_round_robin(struct xdp_md *ctx)
 	return bpf_redirect_map(&cpu_map, cpu_dest, 0);
 }
 
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum3_proto_separate(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -319,7 +324,7 @@ int  xdp_prognum3_proto_separate(struct xdp_md *ctx)
 	return bpf_redirect_map(&cpu_map, cpu_dest, 0);
 }
 
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum4_ddos_filter_pktgen(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -436,7 +441,7 @@ u32 get_ipv6_hash_ip_pair(struct xdp_md *ctx, u64 nh_off)
  * hashing scheme is symmetric, meaning swapping IP src/dest still hit
  * same CPU.
  */
-SEC("xdp.frags")
+SEC("xdp")
 int  xdp_prognum5_lb_hash_ip_pairs(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -452,6 +457,8 @@ int  xdp_prognum5_lb_hash_ip_pairs(struct xdp_md *ctx)
 	u32 key0 = 0;
 	u32 *cpu_max;
 	u32 cpu_hash;
+	u32 rx_hash, rx_hash_type;
+	u64 timestamp;
 
 	rec = bpf_map_lookup_elem(&rx_cnt, &key);
 	if (!rec)
@@ -490,10 +497,14 @@ int  xdp_prognum5_lb_hash_ip_pairs(struct xdp_md *ctx)
 		NO_TEAR_INC(rec->issue);
 		return XDP_ABORTED;
 	}
+
+	bpf_xdp_metadata_rx_hash(ctx, &rx_hash, &rx_hash_type);
+	bpf_xdp_metadata_rx_timestamp(ctx, &timestamp);
+
 	return bpf_redirect_map(&cpu_map, cpu_dest, 0);
 }
 
-SEC("xdp.frags/cpumap")
+SEC("xdp/cpumap")
 int xdp_redirect_cpu_devmap(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -509,19 +520,19 @@ int xdp_redirect_cpu_devmap(struct xdp_md *ctx)
 	return bpf_redirect_map(&tx_port, 0, 0);
 }
 
-SEC("xdp.frags/cpumap")
+SEC("xdp/cpumap")
 int xdp_redirect_cpu_pass(struct xdp_md *ctx)
 {
 	return XDP_PASS;
 }
 
-SEC("xdp.frags/cpumap")
+SEC("xdp/cpumap")
 int xdp_redirect_cpu_drop(struct xdp_md *ctx)
 {
 	return XDP_DROP;
 }
 
-SEC("xdp.frags/devmap")
+SEC("xdp/devmap")
 int xdp_redirect_egress_prog(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
