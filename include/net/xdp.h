@@ -147,6 +147,23 @@ static __always_inline void xdp_buff_set_frag_pfmemalloc(struct xdp_buff *xdp)
 	xdp->flags |= XDP_FLAGS_FRAGS_PF_MEMALLOC;
 }
 
+static __always_inline bool
+xdp_buff_has_rx_meta_hash(const struct xdp_buff *xdp)
+{
+	return !!(xdp->flags & XDP_FLAGS_META_RX_HASH);
+}
+
+static __always_inline bool
+xdp_buff_has_rx_meta_vlan(const struct xdp_buff *xdp)
+{
+	return !!(xdp->flags & XDP_FLAGS_META_RX_VLAN);
+}
+
+static __always_inline bool xdp_buff_has_rx_meta_ts(const struct xdp_buff *xdp)
+{
+	return !!(xdp->flags & XDP_FLAGS_META_RX_TS);
+}
+
 static __always_inline void
 xdp_init_buff(struct xdp_buff *xdp, u32 frame_sz, struct xdp_rxq_info *rxq)
 {
@@ -696,4 +713,44 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 
 	return act;
 }
+
+static inline int xdp_load_rx_hash_from_buff(const struct xdp_buff *xdp,
+					     u32 *hash,
+					     enum xdp_rss_hash_type *rss_type)
+{
+	if (!xdp_buff_has_rx_meta_hash(xdp))
+		return -EINVAL;
+
+	*hash = xdp->rx_meta->hash.val;
+	*rss_type = xdp->rx_meta->hash.type;
+
+	return 0;
+}
+
+static inline int xdp_load_rx_vlan_tag_from_buff(const struct xdp_buff *xdp,
+						 __be16 *vlan_proto,
+						 u16 *vlan_tci)
+{
+	if (!xdp_buff_has_rx_meta_vlan(xdp))
+		return -EINVAL;
+
+	*vlan_proto = xdp->rx_meta->vlan.proto;
+	*vlan_tci = xdp->rx_meta->vlan.tci;
+
+	return 0;
+}
+
+static inline int xdp_load_rx_ts_from_buff(const struct xdp_buff *xdp, u64 *ts)
+{
+	struct skb_shared_info *sinfo;
+
+	if (!xdp_buff_has_rx_meta_ts(xdp))
+		return -EINVAL;
+
+	sinfo = xdp_get_shared_info_from_buff(xdp);
+	*ts = sinfo->hwtstamps.hwtstamp;
+
+	return 0;
+}
+
 #endif /* __LINUX_NET_XDP_H__ */
