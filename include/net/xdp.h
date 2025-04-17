@@ -719,7 +719,7 @@ static inline int xdp_load_rx_hash_from_buff(const struct xdp_buff *xdp,
 					     enum xdp_rss_hash_type *rss_type)
 {
 	if (!xdp_buff_has_rx_meta_hash(xdp))
-		return -EINVAL;
+		return -ENODATA;
 
 	*hash = xdp->rx_meta->hash.val;
 	*rss_type = xdp->rx_meta->hash.type;
@@ -732,7 +732,7 @@ static inline int xdp_load_rx_vlan_tag_from_buff(const struct xdp_buff *xdp,
 						 u16 *vlan_tci)
 {
 	if (!xdp_buff_has_rx_meta_vlan(xdp))
-		return -EINVAL;
+		return -ENODATA;
 
 	*vlan_proto = xdp->rx_meta->vlan.proto;
 	*vlan_tci = xdp->rx_meta->vlan.tci;
@@ -745,7 +745,7 @@ static inline int xdp_load_rx_ts_from_buff(const struct xdp_buff *xdp, u64 *ts)
 	struct skb_shared_info *sinfo;
 
 	if (!xdp_buff_has_rx_meta_ts(xdp))
-		return -EINVAL;
+		return -ENODATA;
 
 	sinfo = xdp_get_shared_info_from_buff(xdp);
 	*ts = sinfo->hwtstamps.hwtstamp;

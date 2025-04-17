@@ -925,7 +925,9 @@ __bpf_kfunc_start_defs();
  */
 __bpf_kfunc int bpf_xdp_metadata_rx_timestamp(const struct xdp_md *ctx, u64 *timestamp)
 {
-	return -EOPNOTSUPP;
+	const struct xdp_buff *xdp = (const struct xdp_buff *)ctx;
+
+	return xdp_load_rx_ts_from_buff(xdp, timestamp);
 }
 
 /**
@@ -948,7 +950,9 @@ __bpf_kfunc int bpf_xdp_metadata_rx_timestamp(const struct xdp_md *ctx, u64 *tim
 __bpf_kfunc int bpf_xdp_metadata_rx_hash(const struct xdp_md *ctx, u32 *hash,
 					 enum xdp_rss_hash_type *rss_type)
 {
-	return -EOPNOTSUPP;
+	const struct xdp_buff *xdp = (const struct xdp_buff *)ctx;
+
+	return xdp_load_rx_hash_from_buff(xdp, hash, rss_type);
 }
 
 /**
@@ -981,7 +985,9 @@ __bpf_kfunc int bpf_xdp_metadata_rx_hash(const struct xdp_md *ctx, u32 *hash,
 __bpf_kfunc int bpf_xdp_metadata_rx_vlan_tag(const struct xdp_md *ctx,
 					     __be16 *vlan_proto, u16 *vlan_tci)
 {
-	return -EOPNOTSUPP;
+	const struct xdp_buff *xdp = (const struct xdp_buff *)ctx;
+
+	return xdp_load_rx_vlan_tag_from_buff(xdp, vlan_proto, vlan_tci);
 }
 
 __bpf_kfunc void bpf_xdp_store_rx_hash(struct xdp_md *ctx, u32 hash,
