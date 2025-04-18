@@ -595,6 +595,12 @@ out:
 	return 0;
 }
 
+struct syscall_trace_enter {
+	struct trace_entry	ent;
+	int			nr;
+	unsigned long		args[];
+};
+
 SEC("tracepoint/syscalls/sys_enter_kill")
 int tracepoint__syscalls__sys_enter_kill(struct syscall_trace_enter* ctx)
 {
