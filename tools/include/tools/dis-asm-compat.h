@@ -7,7 +7,7 @@
 
 /* define types for older binutils version, to centralize ifdef'ery a bit */
 #ifndef DISASM_INIT_STYLED
-enum disassembler_style {DISASSEMBLER_STYLE_NOT_EMPTY};
+//enum disassembler_style {DISASSEMBLER_STYLE_NOT_EMPTY};
 typedef int (*fprintf_styled_ftype) (void *, enum disassembler_style, const char*, ...);
 #endif
 
@@ -48,7 +48,7 @@ static inline void init_disassemble_info_compat(struct disassemble_info *info,
 #else
 	(void)styled_func;
 	init_disassemble_info(info, stream,
-			      unstyled_func);
+			      unstyled_func, styled_func);
 #endif
 }
 

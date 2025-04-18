@@ -10,7 +10,7 @@ SEC("struct_ops")
 int BPF_PROG(bpf_qdisc_test_enqueue, struct sk_buff *skb, struct Qdisc *sch,
 	     struct bpf_sk_buff_ptr *to_free)
 {
-	bpf_qdisc_skb_drop(skb, to_free);
+	//bpf_qdisc_skb_drop(skb, to_free);
 	return NET_XMIT_DROP;
 }
 

@@ -34,8 +34,8 @@ int BPF_PROG(bpf_fifo_enqueue, struct sk_buff *skb, struct Qdisc *sch,
 
 	sch->q.qlen++;
 	skb = bpf_kptr_xchg(&skbn->skb, skb);
-	if (skb)
-		bpf_qdisc_skb_drop(skb, to_free);
+	//if (skb)
+	//	bpf_qdisc_skb_drop(skb, to_free);
 
 	bpf_spin_lock(&q_fifo_lock);
 	bpf_list_push_back(&q_fifo, &skbn->node);
@@ -44,7 +44,7 @@ int BPF_PROG(bpf_fifo_enqueue, struct sk_buff *skb, struct Qdisc *sch,
 	sch->qstats.backlog += pkt_len;
 	return NET_XMIT_SUCCESS;
 drop:
-	bpf_qdisc_skb_drop(skb, to_free);
+	//bpf_qdisc_skb_drop(skb, to_free);
 	return NET_XMIT_DROP;
 }
 
@@ -68,7 +68,7 @@ struct sk_buff *BPF_PROG(bpf_fifo_dequeue, struct Qdisc *sch)
 		return NULL;
 
 	sch->qstats.backlog -= qdisc_pkt_len(skb);
-	bpf_qdisc_bstats_update(sch, skb);
+	//bpf_qdisc_bstats_update(sch, skb);
 	sch->q.qlen--;
 
 	return skb;
@@ -102,8 +102,8 @@ void BPF_PROG(bpf_fifo_reset, struct Qdisc *sch)
 
 		skbn = container_of(node, struct skb_node, node);
 		skb = bpf_kptr_xchg(&skbn->skb, skb);
-		if (skb)
-			bpf_kfree_skb(skb);
+		//if (skb)
+		//	bpf_kfree_skb(skb);
 		bpf_obj_drop(skbn);
 	}
 	sch->q.qlen = 0;

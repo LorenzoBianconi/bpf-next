@@ -277,14 +277,16 @@ fq_classify(struct sk_buff *skb, struct fq_stashed_flow **sflow)
 		ret = CLS_RET_PRIO;
 	} else {
 		if (!sk || sk_listener(sk)) {
-			hash = bpf_skb_get_hash(skb) & q.orphan_mask;
+			//hash = bpf_skb_get_hash(skb) & q.orphan_mask;
+			hash = 0;
 			/* Avoid collision with an existing flow hash, which
 			 * only uses the lower 32 bits of hash, by setting the
 			 * upper half of hash to 1.
 			 */
 			hash |= (1ULL << 32);
 		} else if (sk->__sk_common.skc_state == TCP_CLOSE) {
-			hash = bpf_skb_get_hash(skb) & q.orphan_mask;
+			//hash = bpf_skb_get_hash(skb) & q.orphan_mask;
+			hash = 0;
 			hash |= (1ULL << 32);
 		} else {
 			hash = sk->__sk_common.skc_hash;
@@ -371,8 +373,8 @@ int BPF_PROG(bpf_fq_enqueue, struct sk_buff *skb, struct Qdisc *sch,
 	sch->qstats.backlog += qdisc_pkt_len(skb);
 
 	skb = bpf_kptr_xchg(&skbn->skb, skb);
-	if (skb)
-		bpf_qdisc_skb_drop(skb, to_free);
+	//if (skb)
+	//	bpf_qdisc_skb_drop(skb, to_free);
 
 	bpf_spin_lock(&flow->lock);
 	bpf_rbtree_add(&flow->queue, &skbn->node, skbn_tstamp_less);
@@ -385,7 +387,7 @@ int BPF_PROG(bpf_fq_enqueue, struct sk_buff *skb, struct Qdisc *sch,
 	return NET_XMIT_SUCCESS;
 
 drop:
-	bpf_qdisc_skb_drop(skb, to_free);
+	//bpf_qdisc_skb_drop(skb, to_free);
 	sch->qstats.drops++;
 	return NET_XMIT_DROP;
 }
@@ -611,12 +613,12 @@ struct sk_buff *BPF_PROG(bpf_fq_dequeue, struct Qdisc *sch)
 dequeue:
 		sch->q.qlen--;
 		sch->qstats.backlog -= qdisc_pkt_len(skb);
-		bpf_qdisc_bstats_update(sch, skb);
+		//bpf_qdisc_bstats_update(sch, skb);
 		return skb;
 	}
 
-	if (cb_ctx.expire)
-		bpf_qdisc_watchdog_schedule(sch, cb_ctx.expire, q.timer_slack);
+	//if (cb_ctx.expire)
+	//	bpf_qdisc_watchdog_schedule(sch, cb_ctx.expire, q.timer_slack);
 out:
 	return NULL;
 }

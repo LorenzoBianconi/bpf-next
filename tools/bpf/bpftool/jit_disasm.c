@@ -298,7 +298,11 @@ static int init_context(disasm_ctx_t *ctx, const char *arch,
 					info->mach,
 					bfdf);
 #else
-	ctx->disassemble = disassembler(bfdf);
+	//ctx->disassemble = disassembler(bfdf);
+	ctx->disassemble = disassembler(info->arch,
+					bfd_big_endian(bfdf),
+					info->mach,
+					bfdf);
 #endif
 	if (!ctx->disassemble) {
 		p_err("failed to create disassembler");
